@@ -2,7 +2,11 @@
 
 一个「菜单 + 状态看板」式的自动化调度中心。它只关心**有哪些可调度、哪些在执行、哪些完成、哪些失败**，至于每道「菜」（系统命令 / 脚本 / 程序 / 删除操作）内部怎么做的，调度中心一概黑盒处理。
 
-**当前进度**：后端调度服务已完成（Python + FastAPI + APScheduler + SQLite）；前端已重构为**管理系统样式**（侧边栏 + 顶栏）+ **全局右侧抽屉**（点击「详情」滑出半屏，纵向表格展示执行内容/配置/执行经历）。配置采用 **crawler 风格的类型驱动结构**：先 `type` 定类型，再在 `params` 里写该类型的专属参数。全局常量映射前后端已完成。全部功能已在本机自检 + 端到端验证通过。
+**当前进度**：后端调度服务已完成（Python + FastAPI + APScheduler + SQLite）；前端已重构为**管理系统样式**（侧边栏 + 顶栏）+ **全局右侧抽屉**（点击「详情」滑出半屏，纵向表格展示执行内容/配置/执行经历）。配置采用 **crawler 风格的类型驱动结构**：先 `type` 定类型，再在 `params` 里写该类型的专属参数。
+
+**任务已入库管理**：指令不再需要改 `config/jobs.json` 后重启——任务存储在数据库 `jobs` 表中，界面上可直接 **新增 / 编辑 / 停用 / 删除**，并自动注册/注销定时任务，实时生效（无需重启）。参数表单由后端按类型动态下发，前端自动渲染，**无硬编码**。同时内置**全局并发控制**（同一任务同一时刻最多一个实例在运行，重复触发会被阻止）和**全局动作结果提示**（屏幕中心上方弹出，执行成功/失败/超时/中止即时反馈）。
+
+全部功能已在本机自检 + 端到端验证通过。
 
 ---
 
@@ -79,21 +83,31 @@ python run.py          # 启动在 http://0.0.0.0:8000
 | 方法     | 路径                                   | 说明                                                                |
 | -------- | -------------------------------------- | ------------------------------------------------------------------- |
 | `GET`  | `/api/jobs?type=&enabled=&q=&page=&page_size=&all=` | 菜单：搜索+分页。`type`=JOB_TYPE 枚举，`enabled`=ON/OFF，`q`=名称模糊，`page`/`page_size` 分页，`all=true` 忽略分页返回全部。返回 `{total, page, page_size, items}` |
+| `POST` | `/api/jobs`                       | 新增一条指令（body 同 Job 结构，实时入库并注册定时）          |
+| `PUT`  | `/api/jobs/{name}`                | 更新一条指令（name 作为主键不可改名，实时生效）                |
+| `DELETE` | `/api/jobs/{name}`             | 删除一条指令（同时注销其定时任务）                             |
+| `POST` | `/api/jobs/{name}/enable`         | 启用/停用；body `{enabled: bool}`                              |
+| `GET`  | `/api/job-schema`                 | 各任务类型→参数表单结构（前端据此动态渲染配置表单）            |
 | `GET`  | `/api/groups`                     | 任务分组元信息（key/name/remark/task_type/count）                       |
 | `GET`  | `/api/running?type=&q=&page=&page_size=` | 运行中实例（PID、日志流），支持类型/名称过滤+分页，返回 `{total,...,items}` |
 | `GET`  | `/api/history?status=&job=&type=&q=&page=&page_size=&all=` | 执行历史，可按状态/任务/类型/名称过滤+分页，返回 `{total, page, page_size, items}` |
 | `GET`  | `/api/runs/{id}`                     | 单个运行实例详情（含完整日志）                                      |
-| `POST` | `/api/jobs/{name}/trigger`           | 手动触发某个 Job                                                    |
+| `POST` | `/api/jobs/{name}/trigger`           | 手动触发某个 Job。**409**=该任务正在运行（全局并发上限=1，已阻止）；**403**=已停用 |
 | `POST` | `/api/runs/{id}/abort`               | 中止某个运行实例                                                    |
 | `GET`  | `/api/health`                        | 健康检查                                                            |
 | `GET`  | `/api/config`                        | 服务配置信息                                                        |
+
+> **并发控制**：任一指令同一时刻只允许**一个**运行实例。同任务重复触发时后端返回 `409`，
+> 界面弹出「该指令正在执行中…」提示——避免误点一次又点一次导致重复执行。
 
 ---
 
 ## 配置任务（mapping）
 
-编辑 `config/jobs.json`。配置风格**对齐 crawler 项目的 `TASK_GROUP_CONFIG`**：
-**先分「组」，组内再按 `type` 写 `items`（每条 item 就是一条 Job）**。这样好管理、好添加。
+> **新机制（推荐）**：任务在界面上新增/编辑即写入数据库，**无需改 jobs.json、无需重启**。
+> `config/jobs.json` 仅在**数据库为空时做首次迁移种子**（升级老数据用），之后以数据库为唯一权威。
+
+`jobs.json` 的 JSON 结构（供首次导入 / 批量配置参考）：
 
 ```jsonc
 {
@@ -188,9 +202,10 @@ scheduler-center/
       constants.js   # 前端全局常量映射
       api.js         # axios 请求封装
       router.js      # 页面路由
-      App.vue        # 管理系统布局：侧边栏 + 顶栏 + 全局抽屉
+      App.vue        # 管理系统布局：侧边栏 + 顶栏 + 全局抽屉 + ToastHost
       store/drawer.js# 全局抽屉状态（openJob/closeJob）
-      components/    # JobDrawer.vue（右侧半屏抽屉，纵向表格展示执行内容/配置/经历）
+      store/toast.js # 全局动作结果提示（toast.success/error/info）
+      components/    # JobDrawer/JobForm(动态表单)/JobEditModal/ToastHost/RunDetailDrawer
       views/         # MenuBoard/RunningBoard/HistoryBoard/RunDetail
     vite.config.js   # dev 代理 /api -> 后端
     package.json
@@ -204,6 +219,10 @@ scheduler-center/
 - [X] 前端重构为管理系统样式 + 全局右侧抽屉（详情面板）
 - [X] `fileop` 内置动作（DELETE_FILE / DELETE_DIR / COPY / MOVE，大写、常量化）
 - [X] `PROGRAM` 支持 `detach`（点击启动软件，启动即成功）
+- [X] 指令 CRUD：新增/编辑/停用/删除入库，界面可直接操作、免改 json 免重启
+- [X] 类型驱动的动态配置表单（前端按 `/api/job-schema` 自动渲染参数，无硬编码）
+- [X] 全局并发控制：同一指令同一时刻最多一个实例，重复触发被阻止（409）
+- [X] 全局动作结果提示：执行成功/失败/超时/中止在屏幕中心上方弹出
 - [ ] 按 Run 实例流式推日志（WebSocket 或 SSE）
 - [ ] 通知（任务失败时 HTTP/Email/微信）让「菜单端上来」更及时
 - [ ] 用 NSSM 把后端注册成 Windows 服务开机自启

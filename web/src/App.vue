@@ -7,6 +7,7 @@ import { drawerState, closeJob } from './store/drawer'
 import { connectRealtime, disconnectRealtime } from './store/realtime'
 import JobDrawer from './components/JobDrawer.vue'
 import RunDetailDrawer from './components/RunDetailDrawer.vue'
+import ToastHost from './components/ToastHost.vue'
 
 // 全局常量字典 + 菜单任务列表（供抽屉用）
 const jobs = ref([])
@@ -78,6 +79,9 @@ const menus = [
     <RunDetailDrawer v-if="drawerState.type === 'run'"
                      :id="drawerState.selected"
                      @close="closeJob" />
+
+    <!-- 全局动作结果提示（屏幕中心上方弹出） -->
+    <ToastHost />
   </div>
 </template>
 

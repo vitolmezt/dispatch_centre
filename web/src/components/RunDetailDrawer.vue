@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { fetchRun, abortRun } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel } from '../constants'
 import { bump } from '../store/refresh'
+import { toast } from '../store/toast'
 
 /**
  * 全局右侧抽屉（约半屏宽）：展示一条执行记录的详情。
@@ -40,9 +41,14 @@ const isRunning = computed(() => run.value?.status === 'RUNNING')
 
 async function onAbort() {
   if (!window.confirm('中止该运行?')) return
-  await abortRun(run.value.id)
-  bump() // 通知列表页刷新
-  load()
+  try {
+    await abortRun(run.value.id)
+    toast.info('已发送中止请求')
+    bump() // 通知列表页刷新
+    load()
+  } catch (e) {
+    toast.error('中止失败: ' + (e?.response?.data?.detail || e.message))
+  }
 }
 </script>
 

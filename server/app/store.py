@@ -83,6 +83,16 @@ class Store:
             c.execute("DELETE FROM jobs WHERE name=?", (name,))
             self._conn.commit()
 
+    def get_job(self, name: str) -> Optional[Job]:
+        """按名取单条 Job 定义；不存在返回 None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT job_json FROM jobs WHERE name=?", (name,)
+            ).fetchone()
+        if row is None:
+            return None
+        return Job.from_dict(json.loads(row["job_json"]))
+
     # ---- runs ----
     def save_run(self, run: Run):
         row = json.dumps(run.to_dict(include_log=True))

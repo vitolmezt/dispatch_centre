@@ -16,12 +16,17 @@ import queue
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from . import constants
 from .scheduler import Scheduler
+from .models import Job, JOB_PARAM_SCHEMA
+
+
+def s_job_param_schema():
+    return JOB_PARAM_SCHEMA
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scheduler-center")
@@ -39,6 +44,11 @@ app = FastAPI(
         "| 接口 | 方法 | 说明 |\n"
         "|---|---|---|\n"
         "| `/api/jobs` | GET | 指令列表（分页/类型/启用/名称搜索） |\n"
+        "| `/api/jobs` | POST | 新增一条指令 |\n"
+        "| `/api/jobs/{name}` | PUT | 更新一条指令 |\n"
+        "| `/api/jobs/{name}` | DELETE | 删除一条指令 |\n"
+        "| `/api/jobs/{name}/enable` | POST | 启用/停用一条指令 |\n"
+        "| `/api/job-schema` | GET | 各任务类型的参数表单结构（前端动态表单） |\n"
         "| `/api/groups` | GET | 任务分组元信息 |\n"
         "| `/api/running` | GET | 运行中的实例 |\n"
         "| `/api/history` | GET | 执行历史（状态/类型/名称过滤） |\n"
@@ -106,6 +116,69 @@ def list_jobs(type: Optional[str] = Query(None, alias="type"),
     return {"total": result["total"], "page": page, "page_size": page_size, "items": result["items"]}
 
 
+# ---------- 指令 CRUD（不再依赖 jobs.json，jobs 存于数据库 jobs 表） ----------
+def _job_err(detail: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=detail)
+
+
+@app.post("/api/jobs")
+def create_job(payload: dict = Body(...)):
+    """新增一条指令。payload 结构同旧 jobs.json 条目：{name,type,params,schedule,timeout_s,enabled,description}."""
+    s = get_scheduler()
+    job = Job.from_dict(payload)
+    errs = job.validate()
+    if errs:
+        raise _job_err("；".join(errs))
+    if job.name in s.jobs:
+        raise HTTPException(status_code=409, detail=f"任务名已存在: {job.name}")
+    s.add_job(job)
+    return {"ok": True, "name": job.name}
+
+
+@app.put("/api/jobs/{name}")
+def update_job(name: str, payload: dict = Body(...)):
+    """更新一条指令（按完整覆盖：name 不可改名，其余字段整体替换）."""
+    s = get_scheduler()
+    old = s.jobs.get(name)
+    if old is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
+    data = dict(payload)
+    data["name"] = name  # name 作为主键，不可通过 payload 改名
+    job = Job.from_dict(data)
+    errs = job.validate()
+    if errs:
+        raise _job_err("；".join(errs))
+    s.update_job(job)
+    return {"ok": True, "name": job.name}
+
+
+@app.delete("/api/jobs/{name}")
+def delete_job(name: str):
+    s = get_scheduler()
+    if name not in s.jobs:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
+    s.delete_job(name)
+    return {"ok": True, "name": name}
+
+
+@app.post("/api/jobs/{name}/enable")
+def toggle_job(name: str, payload: dict = Body(...)):
+    """启用/停用一条指令。payload: {enabled: bool}."""
+    s = get_scheduler()
+    job = s.jobs.get(name)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
+    enabled = bool(payload.get("enabled", True))
+    s.set_job_enabled(name, enabled)
+    return {"ok": True, "name": name, "enabled": enabled}
+
+
+@app.get("/api/job-schema")
+def job_schema():
+    """任务类型 -> 参数表单结构（前端据此动态渲染配置表单，无需硬编码）."""
+    return {"types": constants.JOB_TYPE, "schemas": s_job_param_schema()}
+
+
 @app.get("/api/groups")
 def list_groups():
     """任务分组元信息（crawler 风格），供前端按分组分区展示."""
@@ -151,10 +224,20 @@ def run_detail(run_id: str):
 # ---------- 触发 / 中止 ----------
 @app.post("/api/jobs/{name}/trigger")
 def trigger_job(name: str):
-    run = get_scheduler().trigger(name)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Job 不存在或未定义")
-    return {"ok": True, "run_id": run.id, "trigger": run.trigger}
+    """手动触发一次。
+
+    - 409：任务正在运行（全局并发上限=1，拒绝重复触发）
+    - 403：任务已停用
+    - 404：任务不存在
+    """
+    result = get_scheduler().trigger(name)
+    if result is None:
+        raise HTTPException(status_code=404, detail="指令不存在")
+    if result == "blocked":
+        raise HTTPException(status_code=409, detail="该指令正在执行中，请等待其结束后再触发")
+    if result == "disabled":
+        raise HTTPException(status_code=403, detail="该指令已停用，无法触发")
+    return {"ok": True, "run_id": result.id, "trigger": result.trigger}
 
 
 @app.post("/api/runs/{run_id}/abort")

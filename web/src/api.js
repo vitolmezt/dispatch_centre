@@ -16,6 +16,31 @@ export async function fetchJobs(params = {}) {
   return data
 }
 
+export async function createJob(payload) {
+  const { data } = await http.post('/jobs', payload)
+  return data
+}
+
+export async function updateJob(name, payload) {
+  const { data } = await http.put(`/jobs/${encodeURIComponent(name)}`, payload)
+  return data
+}
+
+export async function deleteJob(name) {
+  const { data } = await http.delete(`/jobs/${encodeURIComponent(name)}`)
+  return data
+}
+
+export async function enableJob(name, enabled) {
+  const { data } = await http.post(`/jobs/${encodeURIComponent(name)}/enable`, { enabled })
+  return data
+}
+
+export async function fetchJobSchema() {
+  const { data } = await http.get('/job-schema')
+  return data
+}
+
 export async function fetchGroups() {
   const { data } = await http.get('/groups')
   return data

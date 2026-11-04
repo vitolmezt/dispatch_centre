@@ -197,10 +197,15 @@ class Scheduler:
                     logger.error(f"Job[{name}] cron 注册失败: {e}")
 
     def start(self):
-        # 先加载配置，注册定时任务
-        errs = self.load_config()
-        for e in errs:
-            logger.error(f"配置错误: {e}")
+        # 数据源：数据库 jobs 表为唯一权威。首次升级时若库为空，则从 jobs.json 迁移一次。
+        db_jobs = self.store.load_jobs()
+        if db_jobs:
+            self.jobs = db_jobs
+        else:
+            # 迁移：库中没有任务时，从旧的 jobs.json 导入（方便升级，不清空已有数据）
+            errs = self.load_config()  # 仅首次迁移用：读取 jobs.json -> upsert 到 DB
+            for e in errs:
+                logger.error(f"配置错误: {e}")
         self._register_all()
         self.aps.start()
 
@@ -218,6 +223,13 @@ class Scheduler:
             job = self.jobs.get(job_name)
             if job is None:
                 return None
+            if not job.enabled:
+                return None
+            # 并发控制：同一任务同一时刻最多一个运行实例。
+            # 在持锁状态下「同步预定」运行位，避免多个并发 HTTP 请求在 worker
+            # 线程尚未执行 on_started 时都通过检查、导致重复触发（一次点一次又点一次）。
+            if any(r.job_name == job_name for r in self.running.values()):
+                return None
             run = Run(
                 id=self.store.new_run_id(),
                 job_name=job.name,
@@ -225,7 +237,8 @@ class Scheduler:
                 trigger=trigger,
                 timeout_s=job.timeout_s,
             )
-        # 一个任务若已有一个在跑的新实例，可以简单释放（允许并发，多个进程无冲突）
+            # 同步占位：立即标记为运行中，防止并发重复触发。
+            self.running[run.id] = run
         self.store.save_run(run)
         t = threading.Thread(target=self._run_worker, args=(run, job), daemon=True)
         t.start()
@@ -240,10 +253,19 @@ class Scheduler:
             self.on_finished(run)
 
     # ---------- 对外 API ----------
-    def trigger(self, job_name: str) -> Optional[Run]:
+    def trigger(self, job_name: str):
+        """触发一个任务。
+
+        返回 None 表示任务不存在；返回 "blocked" 表示任务正在运行（全局并发上限=1，拒绝重复触发）；
+        否则返回 Run 实例。前端据此给出不同提示：blocked 时提示「该任务正在执行…」。
+        """
         with self._lock:
             if job_name not in self.jobs:
                 return None
+            if not self.jobs[job_name].enabled:
+                return "disabled"
+            if any(r.job_name == job_name for r in self.running.values()):
+                return "blocked"
         return self._trigger_job(job_name, "api")
 
     def abort(self, run_id: str) -> bool:
@@ -254,6 +276,67 @@ class Scheduler:
             return True
         # 通过 executor 中止底层进程（需要记录 Popen 引用）
         return self.executor.abort(run)
+
+    # ---------- 指令 CRUD（持久化到数据库 jobs 表，替代 jobs.json 热改） ----------
+    def add_job(self, job: Job):
+        with self._lock:
+            self.jobs[job.name] = job
+            self.store.upsert_jobs([job])
+        self._register_job(job)
+
+    def update_job(self, job: Job):
+        with self._lock:
+            existed = job.name in self.jobs
+            self.jobs[job.name] = job
+            self.store.upsert_jobs([job])
+        self._register_job(job)
+        if not existed:
+            logger.info(f"created job {job.name} via update (formerly absent)")
+
+    def delete_job(self, name: str):
+        with self._lock:
+            self.jobs.pop(name, None)
+            self.store.delete_job(name)
+        self._unregister_job(name)
+        logger.info(f"deleted job {name}")
+
+    def set_job_enabled(self, name: str, enabled: bool):
+        with self._lock:
+            job = self.jobs.get(name)
+            if job is None:
+                return False
+            job.enabled = enabled
+            self.store.upsert_jobs([job])
+        if enabled:
+            self._register_job(job)
+        else:
+            self._unregister_job(name)
+        logger.info(f"job {name} enabled={enabled}")
+        return True
+
+    def _register_job(self, job: Job):
+        """注册/更新单个 Job 的 cron（若启用且配置了 schedule）."""
+        try:
+            self.aps.remove_job(f"job_{job.name}")
+        except Exception:  # noqa: BLE001
+            pass
+        if job.enabled and job.schedule:
+            try:
+                self.aps.add_job(
+                    self._trigger_job,
+                    CronTrigger.from_crontab(job.schedule),
+                    args=[job.name, "cron"],
+                    id=f"job_{job.name}",
+                    replace_existing=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Job[{job.name}] cron 注册失败: {e}")
+
+    def _unregister_job(self, name: str):
+        try:
+            self.aps.remove_job(f"job_{name}")
+        except Exception:  # noqa: BLE001
+            pass
 
     def jobs_view(self) -> List[dict]:
         with self._lock:

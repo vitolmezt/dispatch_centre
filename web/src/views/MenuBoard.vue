@@ -1,10 +1,12 @@
 <script setup>
 import { ref, inject, onMounted, watch } from 'vue'
 import { jobTypeLabel, statusLabel, enabledLabel, dict } from '../constants'
-import { fetchJobs, triggerJob } from '../api'
+import { fetchJobs, triggerJob, createJob, updateJob, deleteJob, enableJob, fetchJobSchema } from '../api'
 import { openJob } from '../store/drawer'
 import { refreshTick, bump } from '../store/refresh'
+import { toast } from '../store/toast'
 import PagerBar from '../components/PagerBar.vue'
+import JobEditModal from '../components/JobEditModal.vue'
 
 const reloadJobs = inject('reloadJobs', async () => {})
 
@@ -22,6 +24,14 @@ const qFilter = ref('')
 // 启动确认：记录当前待触发的任务名，气泡显示在其按钮正上方
 const confirmRun = ref(null)
 const running = ref(false)
+
+// 动态表单单据（后端下发） + 新增/编辑弹窗状态
+const schemas = ref({ types: {}, schemas: {} })
+const modalOpen = ref(false)
+const editingJob = ref(null) // null=新增, {..}=编辑
+
+// 操作中按钮的禁用态：jobName -> bool
+const acting = ref({})
 
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
 const enabledOptions = Object.entries(dict.groups?.ENABLED || {}).map(([v, l]) => ({ v, l }))
@@ -57,15 +67,27 @@ function reset() {
   load()
 }
 
+async function loadSchema() {
+  try {
+    const d = await fetchJobSchema()
+    schemas.value = { types: d?.types || {}, schemas: d?.schemas || {} }
+  } catch (e) { /* ignore */ }
+}
+
 async function onConfirmRun() {
   if (!confirmRun.value || running.value) return
   running.value = true
   try {
     await triggerJob(confirmRun.value.name)
+    toast.success(`已启动「${confirmRun.value.name}」`)
     await reloadJobs()
     bump() // 通知其他列表页刷新
   } catch (e) {
-    alert('触发失败: ' + (e?.response?.data?.detail || e.message))
+    const code = e?.response?.status
+    const detail = e?.response?.data?.detail || e.message
+    if (code === 409) toast.info(detail)   // 正在运行，阻止
+    else if (code === 403) toast.error(detail)   // 已停用
+    else toast.error(detail)
   } finally {
     running.value = false
     confirmRun.value = null
@@ -73,7 +95,71 @@ async function onConfirmRun() {
   }
 }
 
-onMounted(load)
+// ---- 新增 / 编辑 ----
+function openCreate() {
+  editingJob.value = null
+  modalOpen.value = true
+}
+
+function openEdit(job) {
+  editingJob.value = JSON.parse(JSON.stringify(job))
+  modalOpen.value = true
+}
+
+async function onModalSubmit(payload) {
+  try {
+    if (editingJob.value) {
+      await updateJob(editingJob.value.name, payload)
+      toast.success(`已更新「${payload.name}」`)
+    } else {
+      await createJob(payload)
+      toast.success(`已新增「${payload.name}」`)
+    }
+    modalOpen.value = false
+    editingJob.value = null
+    await reloadJobs()
+    load()
+  } catch (e) {
+    toast.error('保存失败: ' + (e?.response?.data?.detail || e.message))
+  }
+}
+
+function onModalClose() {
+  modalOpen.value = false
+  editingJob.value = null
+}
+
+// ---- 停用/启用 与 删除 ----
+async function onToggle(job) {
+  const next = !job.enabled
+  acting.value = { ...acting.value, [job.name]: true }
+  try {
+    await enableJob(job.name, next)
+    toast.info(next ? `已启用「${job.name}」` : `已停用「${job.name}」`)
+    load()
+  } catch (e) {
+    toast.error('操作失败: ' + (e?.response?.data?.detail || e.message))
+  } finally {
+    acting.value = { ...acting.value, [job.name]: false }
+  }
+}
+
+async function onDelete(job) {
+  if (!window.confirm(`删除任务「${job.name}」？`)) return
+  acting.value = { ...acting.value, [job.name]: true }
+  try {
+    await deleteJob(job.name)
+    toast.info(`已删除「${job.name}」`)
+    await reloadJobs()
+    load()
+  } catch (e) {
+    toast.error('删除失败: ' + (e?.response?.data?.detail || e.message))
+  } finally {
+    acting.value = { ...acting.value, [job.name]: false }
+  }
+}
+
+onMounted(() => { load(); loadSchema() })
 // 其它页面发生动作（触发/中止）后，本页刷新一次
 watch(refreshTick, () => load())
 </script>
@@ -95,6 +181,7 @@ watch(refreshTick, () => load())
       <label class="search-label">任务名称</label>
       <input v-model="qFilter" placeholder="搜索..." />
       <button class="reset" title="重置条件" @click="reset">重置</button>
+      <button class="primary add-btn" @click="openCreate">+ 新增指令</button>
     </div>
 
     <div class="panel">
@@ -134,7 +221,7 @@ watch(refreshTick, () => load())
             <td class="ops">
               <!-- 启动按钮 + 顶部小弹窗 -->
               <div class="run-wrap">
-                <button class="run-btn" :disabled="!job.enabled" @click.stop="confirmRun = job">▶ 启动</button>
+                <button class="run-btn" :disabled="!job.enabled || acting[job.name]" @click.stop="confirmRun = job">▶ 启动</button>
                 <div v-if="confirmRun === job" class="pop" @click.stop>
                   <div class="pop-msg">是否执行「{{ job.name }}」？</div>
                   <div class="pop-actions">
@@ -145,7 +232,13 @@ watch(refreshTick, () => load())
                   </div>
                 </div>
               </div>
-              <button class="detail-btn" style="margin-left:6px" @click="openJob(job.name)">详情 ›</button>
+              <button class="ops-btn" :disabled="acting[job.name]"
+                      :title="job.enabled ? '停用' : '启用'" @click="onToggle(job)">
+                {{ job.enabled ? '停用' : '启用' }}
+              </button>
+              <button class="ops-btn" :disabled="acting[job.name]" @click="openEdit(job)">编辑</button>
+              <button class="ops-btn danger" :disabled="acting[job.name]" @click="onDelete(job)">删除</button>
+              <button class="detail-btn" style="margin-left:4px" @click="openJob(job.name)">详情 ›</button>
             </td>
           </tr>
           <tr v-if="!loading && !items.length">
@@ -161,6 +254,11 @@ watch(refreshTick, () => load())
     </div>
 
     <PagerBar :page="page" :total="total" :page-size="pageSize" @change="p => { page = p; load() }" />
+
+    <!-- 新增/编辑指令弹窗 -->
+    <JobEditModal v-if="modalOpen" :title="editingJob ? '编辑指令' : '新增指令'"
+                  :schemas="schemas" :initial="editingJob"
+                  @close="onModalClose" @submit="onModalSubmit" />
   </div>
 </template>
 
@@ -180,6 +278,7 @@ watch(refreshTick, () => load())
   background: transparent; border: 1px solid var(--border); color: var(--muted);
 }
 .reset:hover { color: var(--text); border-color: var(--text); }
+.add-btn { margin-left: 8px; }
 .desc { color: var(--muted); font-size: 13px; }
 .trow:hover td { background: var(--panel-2); }
 .toggle { padding: 2px 10px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
@@ -211,8 +310,10 @@ watch(refreshTick, () => load())
   display: inline-flex; align-items: center; vertical-align: middle; max-width: 100%;
 }
 
-.ops { display: flex; justify-content: center; align-items: center; gap: 6px; white-space: nowrap; }
+.ops { display: flex; justify-content: center; align-items: center; gap: 4px; white-space: nowrap; }
 .run-wrap { position: relative; flex-shrink: 0; }
+.ops-btn { padding: 5px 8px; font-size: 12px; }
+.ops-btn.danger { color: var(--danger); border-color: #5a2a2c; }
 /* 启动按钮正上方的小弹窗 */
 .pop {
   position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 30;
