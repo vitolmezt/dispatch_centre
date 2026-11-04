@@ -6,6 +6,7 @@
   - GET  /api/history     执行历史（可过滤 status/job）
   - POST /api/jobs/{name}/trigger  手动触发
   - POST /api/runs/{id}/abort      中止运行
+  - POST /api/runs/{id}/stop       停止 detach 后台进程（按 PID）
   - GET  /api/config      服务器启动配置信息
 """
 from __future__ import annotations
@@ -55,6 +56,7 @@ app = FastAPI(
         "| `/api/runs/{id}` | GET | 单次执行详情（含日志） |\n"
         "| `/api/jobs/{name}/trigger` | POST | 手动触发一次 |\n"
         "| `/api/runs/{id}/abort` | POST | 中止一次运行 |\n"
+        "| `/api/runs/{id}/stop` | POST | 停止 detach 后台进程（按持久化 PID 定向 kill） |\n"
         "| `/api/constants` | GET | 枚举字典（状态/类型/启用） |\n"
         "| `/api/events` | GET | 实时状态推送（SSE） |\n"
         "| `/api/health` | GET | 健康检查 |\n"
@@ -246,6 +248,19 @@ def abort_run(run_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="找不到可中止的运行实例")
     return {"ok": True}
+
+
+@app.post("/api/runs/{run_id}/stop")
+def stop_run(run_id: str):
+    """停止一个以 detach 方式启动的后台进程（按记录的 PID 用 taskkill 精准 kill）.
+
+    用于解决“调度中心关闭后 dsh web 等后台进程成为孤儿、找不到窗口关不掉”的问题：
+    前端点“停止”，后端读该 run 持久化的 PID，taskkill /F /PID 精准终止。
+    """
+    result = get_scheduler().stop(run_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail="找不到该运行记录")
+    return result
 
 
 # ---------- 全局常量字典 ----------

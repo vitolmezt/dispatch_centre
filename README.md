@@ -93,7 +93,8 @@ python run.py          # 启动在 http://0.0.0.0:8000
 | `GET`  | `/api/history?status=&job=&type=&q=&page=&page_size=&all=` | 执行历史，可按状态/任务/类型/名称过滤+分页，返回 `{total, page, page_size, items}` |
 | `GET`  | `/api/runs/{id}`                     | 单个运行实例详情（含完整日志）                                      |
 | `POST` | `/api/jobs/{name}/trigger`           | 手动触发某个 Job。**409**=该任务正在运行（全局并发上限=1，已阻止）；**403**=已停用 |
-| `POST` | `/api/runs/{id}/abort`               | 中止某个运行实例                                                    |
+| `POST` | `/api/runs/{id}/abort`               | 中止某个运行实例（依赖内存 Popen 引用，针对普通运行）            |
+| `POST` | `/api/runs/{id}/stop`                | 停止 detach 后台进程（按持久化的 PID 定向 kill，清理孤儿进程）      |
 | `GET`  | `/api/health`                        | 健康检查                                                            |
 | `GET`  | `/api/config`                        | 服务配置信息                                                        |
 
@@ -146,8 +147,8 @@ python run.py          # 启动在 http://0.0.0.0:8000
 
 | type        | 用途          | `params` 字段                                                     | 执行方式                                                                                   |
 | ----------- | ------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `COMMAND` | 一条命令      | `command`(必填)、`workdir`                                      | 交给系统 shell（cmd / sh）执行                                                             |
-| `SCRIPT`  | 脚本          | `path`(必填)、`args`、`workdir`                               | 按扩展名选解释器：`.ps1`→PowerShell、`.bat/.cmd`→cmd、`.py`→Python、`.sh`→bash |
+| `COMMAND` | 一条命令      | `command`(必填)、`workdir`、`detach`                      | 交给系统 shell（cmd / sh）执行；`detach:true` 后台独立运行                                    |
+| `SCRIPT`  | 脚本          | `path`(必填)、`args`、`workdir`、`detach`          | 按扩展名选解释器：`.ps1`→PowerShell、`.bat/.cmd`→cmd、`.py`→Python、`.sh`→bash；`detach` 同上 |
 | `PROGRAM` | 直接执行程序  | `path`(必填)、`args`、`workdir`、`detach`                   | spawn 程序（exe 等）；`detach:true` 启动即成功                                           |
 | `FILEOP`  | 文件/目录操作 | `action`(必填，大写)、`source`(必填)、`target`、`recursive` | Python 内建动作，见下                                                                      |
 
@@ -160,7 +161,9 @@ python run.py          # 启动在 http://0.0.0.0:8000
 | `COPY`        | 复制文件/目录     | `source`、`target`                  |
 | `MOVE`        | 移动文件/目录     | `source`、`target`                  |
 
-**PROGRAM 的 `detach`**：`true` = 启动即成功（点一下立即 SUCCEEDED，软件在后台独立跑，不等待关闭），适合「点击启动软件」。
+**`detach`（进程类通用：COMMAND / SCRIPT / PROGRAM）**：`true` = 启动即成功（点一下立即 SUCCEEDED），目标进程作为**独立后台进程**在系统里常驻运行，调度中心**不等待其退出、不读取其输出**，不再产生孤儿。配合「停止进程」（`POST /api/runs/{id}/stop`）按记录的 PID 精准 `taskkill /F /T` 整树终止，适合「点击启动常驻服务」场景。**
+
+> **detach 三要素**：① 进程以 `CREATE_NO_WINDOW + stdin/stdout 到 DEVNULL` 脱离调度中心独立存活；② 该 run 的 PID 持久化入库，供“停止进程”调用；③ 调度中心关闭 / 重启**不会**连带终止 detach 后台进程（永不尾随 kill）。**注意**：detach 启动即成功，若进程随后异常，run 仍记为 SUCCEEDED——如需判别存活请用「停止进程」返回值或直接看进程。
 
 ---
 
@@ -175,7 +178,10 @@ trigger ──► pending ──► running ──► succeeded
 
 - **成功判定**：退出码 `0` → succeeded，否则 failed。
 - **超时**：超过 `timeout_s` → timedout 并中止进程树。
-- **中止**：`POST /api/runs/{id}/abort`，Windows 下用 `taskkill /F /T` 连同子进程树一起终止。
+- **中止**：`POST /api/runs/{id}/abort`，Windows 下用 `taskkill /F /T` 连同子进程树一起终止（依赖内存中的 Popen 引用，仅对仍在运行表的普通任务有效）。
+- **停止后台进程**：`POST /api/runs/{id}/stop`，按**持久化的 PID** 定向 `taskkill /F /T`——即使 detach 进程已脱离跟踪、或调度中心曾重启，也能兜底按 PID 清掉孤儿进程。
+
+> **子进程输出统一按 UTF-8 读取**（`text=True` 叠 `encoding="utf-8", errors="replace"`）：修掉 Windows 下默认 GBK 解码在子进程输出中文/特殊字节时抛 `UnicodeDecodeError`、使读取线程崩溃而被误判“启动失败”的问题。`errors="replace"` 兜底非法字节（边界截断）不中断。
 
 ---
 
@@ -187,7 +193,7 @@ scheduler-center/
     app/
       __init__.py
       models.py      # Job / Run 数据模型与状态机（Job 用 type + params 类型驱动结构）
-      executor.py    # 跨平台进程执行器 + FILEOP 内建动作(spawn/pid/kill/日志/超时)
+      executor.py    # 跨平台进程执行器 + FILEOP 内建动作(spawn/pid/kill/日志/超时/detach独立后台/UTF-8解码)
       scheduler.py   # 调度核心 + APScheduler 定时
       store.py       # SQLite 持久化
       main.py        # FastAPI 路由
@@ -219,6 +225,8 @@ scheduler-center/
 - [X] 前端重构为管理系统样式 + 全局右侧抽屉（详情面板）
 - [X] `fileop` 内置动作（DELETE_FILE / DELETE_DIR / COPY / MOVE，大写、常量化）
 - [X] `PROGRAM` 支持 `detach`（点击启动软件，启动即成功）
+- [X] `detach` 扩展至全部进程类（COMMAND / SCRIPT / PROGRAM），独立后台 + 记录 PID + 附带"停止进程"清理孤儿
+- [X] 子进程输出统一按 UTF-8 读取（修 Windows GBK 解码崩溃）
 - [X] 指令 CRUD：新增/编辑/停用/删除入库，界面可直接操作、免改 json 免重启
 - [X] 类型驱动的动态配置表单（前端按 `/api/job-schema` 自动渲染参数，无硬编码）
 - [X] 全局并发控制：同一指令同一时刻最多一个实例，重复触发被阻止（409）
@@ -233,3 +241,7 @@ scheduler-center/
 自检与端到端已在本机验证通过：`server/selfcheck.py` 全部 OK（含 FILEOP 真删文件测试），
 类型化配置从 API 正确下发，`detach` 触发记事本立即 SUCCEEDED，前端 `npm run build` 通过、
 dev 服务 `/api` 代理连通并取回类型化任务。
+
+**本次变更验证（真实 Windows 宿主）**：① UTF-8 中文输出任务 `SUCCEEDED`、日志中文无损、无 `UnicodeDecodeError`；
+② detach 任务启动即 `SUCCEEDED` 且 PID 落库，`POST /api/runs/{id}/stop` 命中该 PID 用 `taskkill /F /T`
+整树杀掉；③ detach 后台进程独立存活、调度中心关闭不连带杀（宿主级闭环测试通过）。

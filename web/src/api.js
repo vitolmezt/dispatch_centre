@@ -71,4 +71,9 @@ export async function abortRun(runId) {
   return data
 }
 
+export async function stopRun(runId) {
+  const { data } = await http.post(`/runs/${runId}/stop`)
+  return data
+}
+
 export default http

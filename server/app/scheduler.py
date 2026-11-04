@@ -277,6 +277,33 @@ class Scheduler:
         # 通过 executor 中止底层进程（需要记录 Popen 引用）
         return self.executor.abort(run)
 
+    def stop(self, run_id: str) -> dict:
+        """停止一个以 detach 方式启动的后台进程（按记录的 PID 定向 kill）.
+
+        返回 dict：{ok, stop, run}，方便前端给出明确提示。
+        与 abort() 的关键区别：这里不依赖内存中的 Popen 引用，而是从数据库
+        读取该 run 存储的 PID，用 taskkill /PID 精准终止——即使调度中心曾重启、
+        进程已脱离运行表，也能兜底清掉孤儿后台进程。
+        """
+        run = self.store.get_run(run_id)
+        if run is None:
+            return {"ok": False, "stop": False, "reason": "run_not_found"}
+        pid = getattr(run, "pid", None)
+        if not pid:
+            return {"ok": True, "stop": False, "reason": "no_pid"}
+        ok = self.executor.kill_by_pid(pid)
+        # 若该进程仍在运行表中则一并标记为已结束
+        with self._lock:
+            r = self.running.get(run_id)
+            if r is not None:
+                r.status = "KILLED"
+                r.error = "用户停止"
+                r.end = datetime.now().astimezone().isoformat(timespec="seconds")
+                self.running.pop(run_id, None)
+                run = r
+        self.store.save_run(run)
+        return {"ok": True, "stop": ok, "pid": pid, "reason": "killed" if ok else "kill_failed"}
+
     # ---------- 指令 CRUD（持久化到数据库 jobs 表，替代 jobs.json 热改） ----------
     def add_job(self, job: Job):
         with self._lock:

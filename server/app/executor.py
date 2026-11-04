@@ -156,6 +156,11 @@ class Executor:
                 cwd=cwd_env,
                 env=env,
                 text=True,
+                # 统一按 UTF-8 读取子进程输出（Windows 下 text=True 默认用 GBK，
+                # 会因无法解码 UTF-8 的中文/特殊字符而抛 UnicodeDecodeError 使读取线程崩溃，
+                # 进而被误判为"启动失败"。errors="replace" 兜底，非法字节仅替换不中断。）
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1 if not detach else 0,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 if Executor._is_windows()
@@ -165,9 +170,17 @@ class Executor:
 
             if detach:
                 # ------------------- 启动即成功（fire-and-forget）-------------------
+                # 独立的隐藏后台进程：不读其 stdout，调度中心退出也不连带杀掉。
+                # run.pid 记录 PID，供前端“停止进程”时用 taskkill /PID 精准定向终止。
+                # 注意：这里不手动触发 on_started/on_finished，统一交由下方 finally 触发一次
+                # on_finished，避免对同一 run 重复上报 finished 事件/重复落库。
                 run.exit_code = 0
                 run.status = "SUCCEEDED"
                 run.error = ""
+                # detach 进程已交付给系统，从进程跟踪表摘除（不做阻塞 wait / 读管道）。
+                with self._lock:
+                    self._procs.pop(run.id, None)
+                return
             else:
                 with self._lock:
                     self._procs[run.id] = proc
@@ -222,6 +235,33 @@ class Executor:
         run.status = "TIMEDOUT"
         run.error = f"执行超过 {run.timeout_s} 秒，已中止"
         self._kill_proc(proc)
+
+    @staticmethod
+    def kill_by_pid(pid) -> bool:
+        """按 PID 精准杀死进程（Windows 用 taskkill /F /PID，Unix 用 kill -9）.
+
+        用于终止 detach 方式拉起的独立后台进程（如 dsh web），
+        只终止该 PID，不影响其它进程。返回是否发出了终止指令。
+        """
+        if not pid:
+            return False
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return False
+        try:
+            if os.name == "nt":
+                r = subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True,
+                    timeout=10,
+                )
+                return r.returncode == 0
+            else:
+                os.kill(pid, 9)
+                return True
+        except Exception:  # noqa: BLE001
+            return False
 
     @staticmethod
     def _kill_proc(proc: subprocess.Popen):

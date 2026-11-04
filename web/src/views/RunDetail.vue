@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { fetchRun, abortRun } from '../api'
+import { fetchRun, abortRun, stopRun } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel } from '../constants'
 import { refreshTick, bump } from '../store/refresh'
 
@@ -21,11 +21,31 @@ onMounted(load)
 watch(refreshTick, () => load())
 
 const isRunning = computed(() => run.value?.status === 'RUNNING')
+// detach 后台进程启动即 SUCCEEDED，但进程仍常驻；只要有 PID 就允许“停止”
+const canStop = computed(() => !!run.value?.pid)
 
 async function onAbort() {
   if (!window.confirm('中止该运行?')) return
   await abortRun(run.value.id)
   bump() // 通知列表页刷新
+  load()
+}
+
+async function onStop() {
+  if (!window.confirm(`停止后台进程 (PID ${run.value.pid})？`)) return
+  try {
+    const r = await stopRun(run.value.id)
+    if (r.stop) {
+      alert('已发送停止指令')
+    } else if (r.reason === 'no_pid') {
+      alert('该记录没有记录 PID')
+    } else {
+      alert('进程可能已不存在或停止失败')
+    }
+  } catch (e) {
+    alert('停止失败: ' + (e?.response?.data?.detail || e.message))
+  }
+  bump()
   load()
 }
 </script>
@@ -37,6 +57,7 @@ async function onAbort() {
       <div class="row">
         <span :class="['badge', run.status]">{{ statusLabel(run.status) }}</span>
         <button class="danger" v-if="isRunning" @click="onAbort">中止</button>
+        <button class="stop" v-if="canStop" @click="onStop" title="按记录的 PID 用 taskkill 精准杀死后台进程">停止进程</button>
       </div>
     </div>
 
@@ -67,6 +88,10 @@ async function onAbort() {
 .m-item { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; }
 .m-item label { font-size: 12px; color: var(--muted); }
 .log { background: #0b0d10; font-family: var(--mono); max-height: 60vh; overflow: auto; }
+.stop {
+  background: #1f3a5f; color: #fff; border: 1px solid #2f5f9f;
+}
+.stop:hover { background: #2a4d7a; }
 .log pre { margin: 0; padding: 8px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
 .log code { display: block; }
 </style>
