@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+ENV/
+
+# 运行时数据 / 日志（不提交本地数据库与日志）
+server/data/
+*.db
+*.sqlite3
+*.log
+logs/
+
+# 前端构建产物与依赖（web/.gitignore 已含，这里兜底）
+node_modules/
+dist/
+
+# 环境与本地配置
+.env
+.env.*
+!.env.example
+*.local
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

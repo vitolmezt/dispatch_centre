@@ -1,0 +1,78 @@
+:root {
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  --bg: #0f1115;
+  --panel: #1a1d24;
+  --panel-2: #22262f;
+  --border: #2c303a;
+  --text: #e6e9ef;
+  --muted: #8b93a3;
+  --primary: #4f8cff;
+  --primary-dim: #3a6ecf;
+  --ok: #35c46d;
+  --warn: #f0ad4e;
+  --danger: #e5484d;
+  --mono: 'Cascadia Code', 'Consolas', monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+a { color: var(--primary); text-decoration: none; }
+
+/* 面板 */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+/* 表格 */
+table { width: 100%; border-collapse: collapse; table-layout: auto; }
+th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; font-size: 13px; white-space: nowrap; }
+td { font-size: 14px; }
+/* 不让单元格内容被挤压换行导致错乱 */
+td .badge, td .toggle { white-space: nowrap; }
+
+/* 徽章(badge) */
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; line-height: 1.8;
+  white-space: nowrap;
+}
+.badge::before {
+  content: ''; width: 8px; height: 8px; border-radius: 50%; background: currentColor;
+}
+.badge.RUNNING   { background: #1a3a6b; color: #6fb1ff; }
+.badge.PENDING   { background: #332c15; color: #f0ad4e; }
+.badge.SUCCEEDED { background: #133423; color: #35c46d; }
+.badge.FAILED    { background: #401a1c; color: #ff6b6e; }
+.badge.TIMEDOUT  { background: #3a1f0e; color: #ffa34d; }
+.badge.KILLED    { background: #332233; color: #c39; }
+.badge.NEUTRAL   { background: #23262e; color: #9aa3b2; }
+
+/* 按钮 */
+button {
+  cursor: pointer; border: 1px solid var(--border);
+  background: var(--panel-2); color: var(--text);
+  padding: 6px 14px; border-radius: 7px; font-size: 13px;
+  transition: opacity .15s, background .15s;
+}
+button:hover { background: #2a2f3a; }
+button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+button.primary:hover { background: var(--primary-dim); }
+button.danger { color: var(--danger); border-color: #5a2a2c; }
+button.danger:hover { background: #2a1415; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+
+code, .mono { font-family: var(--mono); font-size: .95em; white-space: nowrap; }
+.muted { color: var(--muted); }
+.row { display: flex; align-items: center; gap: 10px; }
+.hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
