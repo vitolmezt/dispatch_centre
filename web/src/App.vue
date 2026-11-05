@@ -7,7 +7,6 @@ import { drawerState, closeJob } from './store/drawer'
 import { connectRealtime, disconnectRealtime } from './store/realtime'
 import JobDrawer from './components/JobDrawer.vue'
 import RunDetailDrawer from './components/RunDetailDrawer.vue'
-import ToastHost from './components/ToastHost.vue'
 
 // 全局常量字典 + 菜单任务列表（供抽屉用）
 const jobs = ref([])
@@ -45,32 +44,36 @@ const menus = [
 
 <template>
   <div class="admin">
-    <!-- 左侧导航 -->
-    <aside class="aside">
-      <div class="logo"><span class="logo-mark">S</span>调度中心</div>
-      <nav class="nav">
-        <RouterLink v-for="m in menus" :key="m.to" :to="m.to" class="nav-item">
-          <span>{{ m.label }}</span>
-        </RouterLink>
-      </nav>
-    </aside>
+    <el-container class="app-shell">
+      <!-- 左侧导航：管理系统常见深色窄栏 -->
+      <el-aside width="220px" class="aside">
+        <div class="logo"><span class="logo-mark">S</span>调度中心</div>
+        <nav class="nav">
+          <RouterLink v-for="m in menus" :key="m.to" :to="m.to" class="nav-item">
+            <span>{{ m.label }}</span>
+          </RouterLink>
+        </nav>
+      </el-aside>
 
-    <!-- 右侧主区 -->
-    <div class="main">
-      <header class="topbar">
-        <div class="page-title">{{ pageTitle[route.path] || '调度中心' }}</div>
-        <div class="top-actions"></div>
-      </header>
+      <el-container>
+        <!-- 顶部栏：页面标题 + 右侧动作 -->
+        <el-header class="topbar" height="56px">
+          <div class="page-title">{{ pageTitle[route.path] || '调度中心' }}</div>
+          <div class="top-actions"></div>
+        </el-header>
 
-      <main class="content">
-        <RouterView />
-      </main>
+        <!-- 内容区 -->
+        <el-main class="content">
+          <RouterView />
+        </el-main>
 
-      <footer class="app-footer">
-        <span>调度中心 Scheduler Center</span>
-        <span class="muted">© {{ new Date().getFullYear() }} · 任务调度看板</span>
-      </footer>
-    </div>
+        <!-- 页脚 -->
+        <footer class="app-footer">
+          <span>调度中心 Scheduler Center</span>
+          <span class="muted">© {{ new Date().getFullYear() }} · 任务调度看板</span>
+        </footer>
+      </el-container>
+    </el-container>
 
     <!-- 全局右侧抽屉：任务详情 / 执行详情 -->
     <JobDrawer v-if="drawerState.type === 'job'"
@@ -79,19 +82,17 @@ const menus = [
     <RunDetailDrawer v-if="drawerState.type === 'run'"
                      :id="drawerState.selected"
                      @close="closeJob" />
-
-    <!-- 全局动作结果提示（屏幕中心上方弹出） -->
-    <ToastHost />
   </div>
 </template>
 
 <style scoped>
-.admin { display: flex; min-height: 100vh; }
+.admin { min-height: 100vh; }
+.app-shell { min-height: 100vh; }
 
 /* 左侧导航：管理系统常见深色窄栏 */
 .aside {
-  width: 220px; background: #171a21; border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
+  background: #171a21; border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
 }
 .logo {
   display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px;
@@ -105,27 +106,23 @@ const menus = [
 .nav { padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
 .nav-item {
   display: flex; align-items: center; gap: 12px; padding: 11px 14px;
-  border-radius: 8px; color: #aab2c0; font-size: 14px;
+  border-radius: 8px; color: #aab2c0; font-size: 14px; text-decoration: none;
 }
 .nav-item:hover { background: #21252e; color: var(--text); }
 .nav-item.router-link-active { background: var(--primary); color: #fff; font-weight: 600; }
-.n-icon { font-size: 15px; }
 
-/* 右侧主区 */
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* 顶部栏 */
 .topbar {
-  height: 56px; display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between;
   padding: 0 22px; background: var(--panel); border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 20;
 }
-.crumb { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .page-title { font-size: 15px; font-weight: 700; color: var(--text); }
-.crumb-item { color: var(--muted); }
-.crumb-item.active { color: var(--text); font-weight: 600; }
-.crumb-sep { color: var(--border); }
 .top-actions { display: flex; align-items: center; gap: 8px; }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; }
-.content { flex: 1; padding: 22px; }
+
+/* 内容区 */
+.content { padding: 22px; background: var(--bg); }
+
+/* 页脚 */
 .app-footer {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 22px; border-top: 1px solid var(--border);

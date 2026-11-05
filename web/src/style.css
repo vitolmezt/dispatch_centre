@@ -12,6 +12,49 @@
   --warn: #f0ad4e;
   --danger: #e5484d;
   --mono: 'Cascadia Code', 'Consolas', monospace;
+
+  /* 布局 Token（与 docs/layout-guide.md 对齐） */
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space: 16px;
+  --space-lg: 22px;
+  --space-xl: 32px;
+
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+
+  --aside-w: 220px;
+  --aside-w-collapsed: 64px;
+  --topbar-h: 56px;
+
+  --page-padding: 22px;
+  --container-max: 1400px;
+  --grid-gutter: 16px;
+}
+
+/* Element Plus 暗色主题变量对齐到项目色板，令 el-* 组件与现有观感一致 */
+html.dark {
+  --el-bg-color: var(--panel);
+  --el-bg-color-overlay: #20242d;
+  --el-bg-color-page: var(--bg);
+  --el-fill-color-blank: var(--panel);
+  --el-border-color: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-extra-light: var(--border);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: #ccd2dc;
+  --el-text-color-secondary: var(--muted);
+  --el-text-color-placeholder: #5f6875;
+  --el-color-primary: var(--primary);
+  --el-color-danger: var(--danger);
+  --el-color-success: var(--ok);
+  --el-color-warning: var(--warn);
+  --el-fill-color: var(--panel-2);
+  --el-fill-color-light: var(--panel-2);
+  --el-fill-color-lighter: var(--panel-2);
+  --el-mask-color: rgba(0,0,0,.5);
 }
 
 * { box-sizing: border-box; }
@@ -23,22 +66,6 @@ body {
 }
 
 a { color: var(--primary); text-decoration: none; }
-
-/* 面板 */
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
-}
-
-/* 表格 */
-table { width: 100%; border-collapse: collapse; table-layout: auto; }
-th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
-th { color: var(--muted); font-weight: 500; font-size: 13px; white-space: nowrap; }
-td { font-size: 14px; }
-/* 不让单元格内容被挤压换行导致错乱 */
-td .badge, td .toggle { white-space: nowrap; }
 
 /* 徽章(badge) */
 .badge {
@@ -58,21 +85,40 @@ td .badge, td .toggle { white-space: nowrap; }
 .badge.KILLED    { background: #332233; color: #c39; }
 .badge.NEUTRAL   { background: #23262e; color: #9aa3b2; }
 
-/* 按钮 */
-button {
-  cursor: pointer; border: 1px solid var(--border);
-  background: var(--panel-2); color: var(--text);
-  padding: 6px 14px; border-radius: 7px; font-size: 13px;
-  transition: opacity .15s, background .15s;
-}
-button:hover { background: #2a2f3a; }
-button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-button.primary:hover { background: var(--primary-dim); }
-button.danger { color: var(--danger); border-color: #5a2a2c; }
-button.danger:hover { background: #2a1415; }
-button:disabled { opacity: .4; cursor: not-allowed; }
-
 code, .mono { font-family: var(--mono); font-size: .95em; white-space: nowrap; }
 .muted { color: var(--muted); }
 .row { display: flex; align-items: center; gap: 10px; }
 .hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+/* ===== 页面容器 / 布局工具类（docs/layout-guide.md §6） ===== */
+/* 每个路由页根元素统一套用。
+   铺满 el-main 内容区（横向留白交给 .content 的 padding:22px，这里不再叠加），
+   列表表格因此可用满整行宽度。 */
+.page {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space);
+}
+
+/* 页面次级标题栏（模板 B：标题 + 右侧动作） */
+.page-sub {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space);
+}
+.page-title-fn {
+  margin: 0; font-size: 18px; font-weight: 700; color: var(--text);
+}
+
+/* 元信息网格单项（详情页/抽屉共用） */
+.fn-meta-item { padding: var(--space-sm) 0; }
+.fn-meta-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.fn-meta-value { font-size: 14px; color: var(--text); word-break: break-all; }
+
+/* 紧凑面板（el-card 的补充边距，替代手写 .panel 的 padding） */
+.el-card { --el-card-padding: 16px; }
+
+/* 抽屉在窄屏（平板竖屏）时不超过屏幕约 9 成，避免占满 */
+@media (max-width: 768px) {
+  .el-drawer { max-width: 92vw; }
+}

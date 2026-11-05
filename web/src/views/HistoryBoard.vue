@@ -23,15 +23,12 @@ const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => 
 // 排序：默认按执行开始时间倒序（最近执行的在前）
 const sortField = ref('start')
 const sortOrder = ref('desc')
-function toggleSort(field) {
-  if (sortField.value === field) sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
-  else { sortField.value = field; sortOrder.value = 'desc' }
+function onSortChange({ prop, order }) {
+  if (!prop || !order) return
+  sortField.value = prop
+  sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
   page.value = 1
   load()
-}
-function sortIcon(field) {
-  if (sortField.value !== field) return ''
-  return sortOrder.value === 'desc' ? '▼' : '▲'
 }
 
 function fmtT(s) { return (s || '').replace('T', ' ').slice(5, 19) }
@@ -58,130 +55,82 @@ onMounted(load)
 watch(refreshTick, () => load())
 
 function open(run) { openRun(run.id) }
-
-function reset() {
-  statusFilter.value = ''
-  typeFilter.value = ''
-  qFilter.value = ''
-  page.value = 1
-  load()
-}
 </script>
 
 <template>
-  <div>
-    <div class="search">
-      <label class="search-label">指令类型</label>
-      <select v-model="typeFilter">
-        <option value="">全部</option>
-        <option v-for="o in typeOptions" :key="o.v" :value="o.v">{{ o.l }}</option>
-      </select>
-      <label class="search-label">执行状态</label>
-      <select v-model="statusFilter">
-        <option value="">全部</option>
-        <option v-for="o in statusOptions" :key="o.v" :value="o.v">{{ o.l }}</option>
-      </select>
-      <label class="search-label">指令名称</label>
-      <input v-model="qFilter" placeholder="搜索…" />
-      <button class="reset" title="重置条件" @click="reset">重置</button>
-    </div>
+  <div class="page">
+    <!-- 搜索栏 -->
+    <el-card shadow="never" class="toolbar">
+      <el-form inline @submit.prevent>
+        <el-form-item label="指令类型">
+          <el-select v-model="typeFilter" placeholder="全部" clearable style="width:130px">
+            <el-option v-for="o in typeOptions" :key="o.v" :value="o.v" :label="o.l" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="执行状态">
+          <el-select v-model="statusFilter" placeholder="全部" clearable style="width:130px">
+            <el-option v-for="o in statusOptions" :key="o.v" :value="o.v" :label="o.l" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="指令名称">
+          <el-input v-model="qFilter" placeholder="搜索…" clearable style="width:190px" />
+        </el-form-item>
+      </el-form>
+    </el-card>
 
-    <div class="panel">
-      <table class="tb">
-        <colgroup>
-          <col style="width:16%" />
-          <col style="width:13%" />
-          <col style="width:10%" />
-          <col style="width:8%" />
-          <col style="width:10%" />
-          <col style="width:11%" />
-          <col style="width:11%" />
-          <col style="width:8%" />
-          <col style="width:7%" />
-          <col style="width:11%" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>Run ID</th>
-            <th class="sortable" @click="toggleSort('name')">任务 {{ sortIcon('name') }}</th>
-            <th>类型</th>
-            <th>触发</th>
-            <th>状态</th>
-            <th class="sortable" @click="toggleSort('start')">执行开始时间 {{ sortIcon('start') }}</th>
-            <th>执行结束时间</th>
-            <th>耗时</th>
-            <th>退出码</th>
-            <th class="col-ops">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="run in runs" :key="run.id" class="clickable" @click="open(run)">
-            <td class="mono">{{ run.id }}</td>
-            <td class="jname"><strong>{{ run.job_name }}</strong></td>
-            <td><span class="badge NEUTRAL">{{ jobTypeLabel(run.job_type) }}</span></td>
-            <td>{{ triggerLabel(run.trigger) }}</td>
-            <td class="stcol">
-              <span :class="['badge', run.status]"
-                    :title="run.error ? (statusLabel(run.status) + (run.error ? ' · ' + run.error : '')) : statusLabel(run.status)">
-                {{ statusLabel(run.status) }}
-              </span>
-            </td>
-            <td class="mono">{{ fmtT(run.start) }}</td>
-            <td class="mono">{{ fmtT(run.end) || '—' }}</td>
-            <td class="mono">{{ run.duration_ms != null ? (run.duration_ms/1000).toFixed(2)+'s' : '—' }}</td>
-            <td class="mono">
-              <!-- 失败/异常时不展示退出码 -->
-              <span v-if="run.status === 'FAILED' || run.status === 'KILLED' || run.status === 'TIMEDOUT'">—</span>
-              <span v-else>{{ run.exit_code ?? '—' }}</span>
-            </td>
-            <td class="ops">
-              <button @click.stop="open(run)">详情</button>
-            </td>
-          </tr>
-          <tr v-if="!runs.length">
-            <td colspan="10" class="muted" style="text-align:center; padding:24px">
-              {{ loading ? '加载中…' : '暂无记录，去「指令列表」页触发一个任务试试' }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <!-- 数据表 -->
+    <el-card shadow="never" class="table-card">
+      <el-table :data="runs" v-loading="loading" @sort-change="onSortChange"
+                :empty-text="loading ? '加载中…' : '暂无记录，去「指令列表」页触发一个任务试试'"
+                highlight-current-row @row-click="open" class="clickable">
+        <el-table-column prop="id" label="Run ID" min-width="90" />
+        <el-table-column prop="name" label="任务" min-width="150" sortable="custom">
+          <template #default="{ row }"><strong>{{ row.job_name }}</strong></template>
+        </el-table-column>
+        <el-table-column label="类型" min-width="90">
+          <template #default="{ row }"><span class="badge NEUTRAL">{{ jobTypeLabel(row.job_type) }}</span></template>
+        </el-table-column>
+        <el-table-column label="触发" min-width="80">
+          <template #default="{ row }">{{ triggerLabel(row.trigger) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" min-width="100">
+          <template #default="{ row }">
+            <span :class="['badge', row.status]"
+                  :title="statusLabel(row.status) + (row.error ? ' · ' + row.error : '')">
+              {{ statusLabel(row.status) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="start" label="执行开始时间" min-width="140" sortable="custom">
+          <template #default="{ row }">{{ fmtT(row.start) }}</template>
+        </el-table-column>
+        <el-table-column label="执行结束时间" min-width="140">
+          <template #default="{ row }">{{ fmtT(row.end) || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="耗时" min-width="80">
+          <template #default="{ row }">{{ row.duration_ms != null ? (row.duration_ms/1000).toFixed(2)+'s' : '—' }}</template>
+        </el-table-column>
+        <el-table-column label="退出码" min-width="70">
+          <template #default="{ row }">
+            <span v-if="row.status === 'FAILED' || row.status === 'KILLED' || row.status === 'TIMEDOUT'">—</span>
+            <span v-else>{{ row.exit_code ?? '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" fixed="right" width="90">
+          <template #default="{ row }">
+            <el-button size="small" @click.stop="open(row)">详情</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
 
-    <PagerBar :page="page" :total="total" :page-size="pageSize" @change="p => { page = p; load() }" />
+      <PagerBar :page="page" :total="total" :page-size="pageSize" @change="p => { page = p; load() }" />
+    </el-card>
   </div>
 </template>
 
 <style scoped>
+.page { display: flex; flex-direction: column; gap: var(--space); }
+.toolbar :deep(.el-form-item) { margin-bottom: 0; }
+.toolbar :deep(.el-form--inline) { flex-wrap: wrap; row-gap: 12px; }
 .clickable { cursor: pointer; }
-.clickable:hover td { background: var(--panel-2); }
-/* 固定列宽布局：列宽百分比严格固定，单元格绝不换行、绝不堆叠 */
-.tb { table-layout: fixed; }
-.tb th, .tb td {
-  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  vertical-align: middle;
-}
-/* 操作列：表头和按钮组都居中 */
-.tb th.col-ops { text-align: center; }
-.tb td.ops { text-align: center; }
-.tb th.sortable { cursor: pointer; user-select: none; }
-.tb th.sortable:hover { color: var(--primary); }
-.tb .stcol { vertical-align: middle; }
-.tb .stcol .badge, .tb td .badge { display: inline-flex; align-items: center; vertical-align: middle; }
-.ops { display: flex; justify-content: center; align-items: center; gap: 6px; white-space: nowrap; }
-button { border-radius: 7px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
-.search {
-  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
-  width: 100%; box-sizing: border-box;
-}
-.search-label { color: var(--muted); font-size: 13px; white-space: nowrap; }
-.search select, .search input {
-  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-  border-radius: 7px; padding: 7px 10px; font-size: 13px;
-}
-.search input { width: 190px; }
-.reset {
-  margin-left: auto; /* 重置按钮推到搜索框右侧 */
-  background: transparent; border: 1px solid var(--border); color: var(--muted);
-}
-.reset:hover { color: var(--text); border-color: var(--text); }
 </style>

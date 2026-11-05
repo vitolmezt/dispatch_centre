@@ -361,6 +361,9 @@ class Scheduler:
             job = self.jobs.get(name)
             if job is None:
                 return False
+            # 正在执行的指令不允许停用，避免调度语义混乱
+            if not enabled and any(r.job_name == name for r in self.running.values()):
+                raise ValueError(f"指令「{name}」正在执行，不能停用")
             job.enabled = enabled
             self.store.upsert_jobs([job])
         if enabled:

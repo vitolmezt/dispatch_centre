@@ -1,5 +1,6 @@
 <script setup>
 import { ref, inject, onMounted, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { jobTypeLabel, statusLabel, enabledLabel, dict } from '../constants'
 import { fetchJobs, triggerJob, createJob, updateJob, deleteJob, enableJob, fetchJobSchema } from '../api'
 import { openJob } from '../store/drawer'
@@ -25,20 +26,12 @@ const qFilter = ref('')
 const sortField = ref('created_at')
 const sortOrder = ref('desc')
 
-function toggleSort(field) {
-  if (sortField.value === field) {
-    sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
-  } else {
-    sortField.value = field
-    sortOrder.value = 'desc'
-  }
+function onSortChange({ prop, order }) {
+  if (!prop || !order) return
+  sortField.value = prop
+  sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
   page.value = 1
   load()
-}
-
-function sortIcon(field) {
-  if (sortField.value !== field) return ''
-  return sortOrder.value === 'desc' ? '▼' : '▲'
 }
 const fmtTime = (s) => (s || '').replace('T', ' ').slice(0, 16)
 
@@ -79,14 +72,6 @@ watch(qFilter, () => {
   clearTimeout(qTimer)
   qTimer = setTimeout(() => { page.value = 1; load() }, 300)
 })
-
-function reset() {
-  typeFilter.value = ''
-  enabledFilter.value = ''
-  qFilter.value = ''
-  page.value = 1
-  load()
-}
 
 async function loadSchema() {
   try {
@@ -152,6 +137,10 @@ function onModalClose() {
 
 // ---- 停用/启用 与 删除 ----
 async function onToggle(job) {
+  if (job.enabled && job.running_count > 0) {
+    toast.info(`「${job.name}」正在执行中，不能停用`)
+    return
+  }
   const next = !job.enabled
   acting.value = { ...acting.value, [job.name]: true }
   try {
@@ -159,14 +148,24 @@ async function onToggle(job) {
     toast.info(next ? `已启用「${job.name}」` : `已停用「${job.name}」`)
     load()
   } catch (e) {
-    toast.error('操作失败: ' + (e?.response?.data?.detail || e.message))
+    const status = e?.response?.status
+    const detail = e?.response?.data?.detail || e.message
+    toast.error(status === 409 ? detail : '操作失败: ' + detail)
   } finally {
     acting.value = { ...acting.value, [job.name]: false }
   }
 }
 
 async function onDelete(job) {
-  if (!window.confirm(`删除任务「${job.name}」？`)) return
+  try {
+    await ElMessageBox.confirm(`确定删除指令「${job.name}」？删除后不可恢复。`, '删除指令', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch (e) {
+    return // 用户取消
+  }
   acting.value = { ...acting.value, [job.name]: true }
   try {
     await deleteJob(job.name)
@@ -186,95 +185,88 @@ watch(refreshTick, () => load())
 </script>
 
 <template>
-  <div>
-    <!-- 搜索栏：左对齐，变化即刷新；重置按钮靠右 -->
-    <div class="search">
-      <label class="search-label">指令类型</label>
-      <select v-model="typeFilter">
-        <option value="">类型</option>
-        <option v-for="o in typeOptions" :key="o.v" :value="o.v">{{ o.l }}</option>
-      </select>
-      <label class="search-label">启用状态</label>
-      <select v-model="enabledFilter">
-        <option value="">全部</option>
-        <option v-for="o in enabledOptions" :key="o.v" :value="o.v">{{ o.l }}</option>
-      </select>
-      <label class="search-label">任务名称</label>
-      <input v-model="qFilter" placeholder="搜索..." />
-      <button class="reset" title="重置条件" @click="reset">重置</button>
-      <button class="primary add-btn" @click="openCreate">+ 新增指令</button>
-    </div>
+  <div class="page">
+    <!-- 搜索栏：表格上方统一工具栏 -->
+    <el-card shadow="never" class="toolbar">
+      <el-form inline @submit.prevent>
+        <el-form-item label="指令类型">
+          <el-select v-model="typeFilter" placeholder="类型" clearable style="width:130px">
+            <el-option v-for="o in typeOptions" :key="o.v" :value="o.v" :label="o.l" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="启用状态">
+          <el-select v-model="enabledFilter" placeholder="全部" clearable style="width:120px">
+            <el-option v-for="o in enabledOptions" :key="o.v" :value="o.v" :label="o.l" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="任务名称">
+          <el-input v-model="qFilter" placeholder="搜索..." clearable style="width:200px" />
+        </el-form-item>
+        <el-form-item class="toolbar-btn">
+          <el-button type="primary" @click="openCreate">+ 新增指令</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
 
-    <div class="panel">
-      <table class="mb">
-        <colgroup>
-          <col style="width:20%" />
-          <col style="width:10%" />
-          <col style="width:14%" />
-          <col style="width:18%" />
-          <col style="width:11%" />
-          <col style="width:11%" />
-          <col style="width:16%" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th class="sortable" @click="toggleSort('name')">任务名 {{ sortIcon('name') }}</th>
-            <th>类型</th>
-            <th>描述</th>
-            <th class="sortable" @click="toggleSort('created_at')">创建时间 {{ sortIcon('created_at') }}</th>
-            <th>启用</th>
-            <th>最近状态</th>
-            <th class="col-ops">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="job in items" :key="job.name" class="trow">
-            <td><strong>{{ job.name }}</strong></td>
-            <td><span class="badge NEUTRAL">{{ jobTypeLabel(job.type) }}</span></td>
-            <td class="desc" :title="job.description || ''">
-              <span class="desc-inner">{{ job.description || '—' }}</span>
-            </td>
-            <td class="mono">{{ fmtTime(job.created_at) || '—' }}</td>
-            <td>
-              <span :class="['toggle', job.enabled ? 'on' : 'off']">{{ enabledLabel(job.enabled) }}</span>
-            </td>
-            <td>
-              <span v-if="job.last_status" :class="['badge', job.last_status]">{{ statusLabel(job.last_status) }}</span>
-              <span v-else class="muted">—</span>
-            </td>
-            <td class="ops">
-              <!-- 启动按钮 + 顶部小弹窗 -->
-              <div class="run-wrap">
-                <button class="run-btn" :disabled="!job.enabled || acting[job.name]" @click.stop="confirmRun = job">▶ 启动</button>
-                <div v-if="confirmRun === job" class="pop" @click.stop>
-                  <div class="pop-msg">是否执行「{{ job.name }}」？</div>
+    <!-- 数据表 -->
+    <el-card shadow="never" class="table-card">
+      <el-table :data="items" v-loading="loading" stripe
+                @sort-change="onSortChange" :empty-text="loading ? '加载中…' : '没有匹配的任务，换个搜索条件试试'">
+        <el-table-column prop="name" label="任务名" min-width="180" sortable="custom">
+          <template #default="{ row }"><strong class="tname">{{ row.name }}</strong></template>
+        </el-table-column>
+        <el-table-column label="类型" min-width="110">
+          <template #default="{ row }"><span class="badge NEUTRAL">{{ jobTypeLabel(row.type) }}</span></template>
+        </el-table-column>
+        <el-table-column label="描述" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.description || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="创建时间" min-width="150" sortable="custom">
+          <template #default="{ row }">{{ fmtTime(row.created_at) || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="启用" min-width="90">
+          <template #default="{ row }">
+            <span :class="['toggle', row.enabled ? 'on' : 'off']">{{ enabledLabel(row.enabled) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最近状态" min-width="110">
+          <template #default="{ row }">
+            <span v-if="row.last_status" :class="['badge', row.last_status]">{{ statusLabel(row.last_status) }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" fixed="right" width="290">
+          <template #default="{ row }">
+            <div class="ops">
+              <!-- 启动按钮 + 确认弹窗 -->
+              <el-popover :visible="confirmRun === row" placement="top" :width="240">
+                <template #reference>
+                  <el-button size="small" :disabled="!row.enabled || acting[row.name]"
+                             class="run-btn" @click="confirmRun = row">▶ 启动</el-button>
+                </template>
+                <div class="pop-inner">
+                  <div class="pop-msg">是否执行「{{ row.name }}」？</div>
                   <div class="pop-actions">
-                    <button class="cancel" @click="confirmRun = null">取消</button>
-                    <button class="ok" :disabled="running" @click="onConfirmRun">
+                    <el-button size="small" @click="confirmRun = null">取消</el-button>
+                    <el-button size="small" type="success" :loading="running" @click="onConfirmRun">
                       {{ running ? '执行中…' : '确认执行' }}
-                    </button>
+                    </el-button>
                   </div>
                 </div>
-              </div>
-              <button class="ops-btn" :disabled="acting[job.name]"
-                      :title="job.enabled ? '停用' : '启用'" @click="onToggle(job)">
-                {{ job.enabled ? '停用' : '启用' }}
-              </button>
-              <button class="ops-btn" :disabled="acting[job.name]" @click="openEdit(job)">编辑</button>
-              <button class="ops-btn danger" :disabled="acting[job.name]" @click="onDelete(job)">删除</button>
-              <button class="detail-btn" style="margin-left:4px" @click="openJob(job.name)">详情 ›</button>
-            </td>
-          </tr>
-          <tr v-if="!items.length">
-            <td colspan="7" class="muted" style="text-align:center; padding:28px">
-              {{ loading ? '加载中…' : '没有匹配的任务，换个搜索条件试试' }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+              </el-popover>
+              <el-button size="small" :disabled="acting[row.name] || (row.enabled && row.running_count > 0)"
+                         :title="(row.enabled && row.running_count > 0) ? '正在执行中，不能停用' : ''"
+                         @click="onToggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
+              <el-button size="small" :disabled="acting[row.name]" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" type="danger" plain :disabled="acting[row.name]" @click="onDelete(row)">删除</el-button>
+              <el-button size="small" text type="primary" @click="openJob(row.name)">详情 ›</el-button>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
 
-    <PagerBar :page="page" :total="total" :page-size="pageSize" @change="p => { page = p; load() }" />
+      <PagerBar :page="page" :total="total" :page-size="pageSize" @change="p => { page = p; load() }" />
+    </el-card>
 
     <!-- 新增/编辑指令弹窗 -->
     <JobEditModal v-if="modalOpen" :title="editingJob ? '编辑指令' : '新增指令'"
@@ -284,81 +276,27 @@ watch(refreshTick, () => load())
 </template>
 
 <style scoped>
-.search {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 14px; /* 左对齐 */
+.page { display: flex; flex-direction: column; gap: var(--space); }
+.toolbar { overflow-x: auto; }
+/* 搜索栏：整行单选，筛选条件与按钮处同一水平行；屏幕不足时横向滚动而非换行 */
+.toolbar :deep(.el-form--inline) {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--space);
 }
-.search-label { color: var(--muted); font-size: 13px; white-space: nowrap; }
-.search select, .search input {
-  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-  border-radius: 7px; padding: 7px 10px; font-size: 13px;
-}
-.search input { width: 200px; }
-.reset {
-  margin-left: auto; /* 重置按钮推到最右 */
-  background: transparent; border: 1px solid var(--border); color: var(--muted);
-}
-.reset:hover { color: var(--text); border-color: var(--text); }
-.add-btn { margin-left: 8px; }
-.desc { color: var(--muted); font-size: 13px; }
-.trow:hover td { background: var(--panel-2); }
+.toolbar :deep(.el-form-item) { margin-bottom: 0; margin-right: 0; flex: 0 0 auto; }
+/* 「+ 新增指令」顶到最右端 */
+.toolbar :deep(.el-form-item.toolbar-btn) { margin-left: auto; }
+
+.tname { font-weight: 600; }
 .toggle { padding: 2px 10px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
 .toggle.on { background: #133423; color: var(--ok); }
 .toggle.off { background: #332233; color: var(--warn); }
 
-/* ---- 表格：固定列宽 + 内容居中 ---- */
-.mb { table-layout: fixed; width: 100%; }
-.mb th, .mb td {
-  text-align: center;          /* 表头与表体内容居中 */
-  vertical-align: middle;
-  white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;   /* 防止内容溢出撑宽 */
-}
-/* 操作列：表头和按钮组都居中 → 表头正好在按钮组正中间 */
-.mb th.col-ops { text-align: center; }
-.mb td.ops { text-align: center; }
-/* 操作列须允许子元素溢出，否则确认弹窗会被单元格裁掉 */
-.mb td.ops { overflow: visible; }
-/* 可点击排序的表头 */
-.mb th.sortable { cursor: pointer; user-select: none; }
-.mb th.sortable:hover { color: var(--primary); }
-/* 描述：居中 + 单行省略，hover 看完整 */
-.mb td.desc { width: auto; }
-.mb td.desc .desc-inner {
-  display: inline-block; max-width: 100%;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  vertical-align: middle;
-}
-/* 内部包裹标签强制同行、不换行 */
-.mb td .badge, .mb td .toggle, .mb td strong {
-  display: inline-flex; align-items: center; vertical-align: middle; max-width: 100%;
-}
-
-.ops { display: flex; justify-content: center; align-items: center; gap: 4px; white-space: nowrap; }
-.run-wrap { position: relative; flex-shrink: 0; }
-.ops-btn { padding: 5px 8px; font-size: 12px; }
-.ops-btn.danger { color: var(--danger); border-color: #5a2a2c; }
-/* 启动按钮正上方的小弹窗 */
-.pop {
-  position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 30;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.5); padding: 12px 14px; width: 240px;
-}
-.pop::after {
-  content: ''; position: absolute; top: 100%; right: 18px;
-  border: 6px solid transparent; border-top-color: var(--border);
-}
-.pop-msg { font-size: 13px; margin-bottom: 10px; text-align: center; word-break: break-word; }
+.ops { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.run-btn { font-weight: 600; }
+.pop-inner { text-align: center; }
+.pop-msg { margin-bottom: 10px; font-size: 13px; word-break: break-word; }
 .pop-actions { display: flex; justify-content: center; gap: 6px; }
-.pop-actions button { border-radius: 7px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
-.pop-actions .cancel { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
-.pop-actions .ok { background: var(--ok); color: #04120a; border: none; font-weight: 600; }
-.pop-actions button:disabled { opacity: .5; }
-
-button.run-btn { background: var(--ok); border: none; color: #04120a; font-weight: 600; }
-button.run-btn:hover:not(:disabled) { filter: brightness(1.1); }
-button.run-btn:disabled { opacity: .4; cursor: not-allowed; }
-.detail-btn { background: transparent; border: 1px solid var(--primary); color: var(--primary); }
-.detail-btn:hover { background: var(--primary); color: #fff; }
-button { border-radius: 7px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
 </style>

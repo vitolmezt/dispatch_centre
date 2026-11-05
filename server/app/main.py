@@ -174,7 +174,11 @@ def toggle_job(name: str, payload: dict = Body(...)):
     if job is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
     enabled = bool(payload.get("enabled", True))
-    s.set_job_enabled(name, enabled)
+    try:
+        s.set_job_enabled(name, enabled)
+    except ValueError as e:
+        # 正在执行的指令不允许停用
+        raise HTTPException(status_code=409, detail=str(e))
     return {"ok": True, "name": name, "enabled": enabled}
 
 

@@ -90,111 +90,88 @@ function onCancel() {
 </script>
 
 <template>
-  <form class="jobform" @submit.prevent="onSubmit">
+  <el-form class="jobform" label-position="top" @submit.prevent>
     <!-- 基础字段 -->
-    <div class="f-row">
-      <label>任务名 <b>*</b></label>
-      <input v-model="form.name" required placeholder="如：数据降频脚本" />
-    </div>
-    <div class="f-row">
-      <label>任务类型 <b>*</b></label>
-      <select v-model="form.type" required>
-        <option v-for="o in typeOptions" :key="o.v" :value="o.v">{{ o.l }}</option>
-      </select>
-    </div>
-    <div class="f-row">
-      <label>说明</label>
-      <input v-model="form.description" placeholder="一句话说明这个任务做什么" />
-    </div>
+    <el-row :gutter="16">
+      <el-col :xs="24" :md="12">
+        <el-form-item label="任务名" required>
+          <el-input v-model="form.name" required placeholder="如：数据降频脚本" />
+        </el-form-item>
+      </el-col>
+      <el-col :xs="24" :md="12">
+        <el-form-item label="任务类型" required>
+          <el-select v-model="form.type" style="width:100%">
+            <el-option v-for="o in typeOptions" :key="o.v" :value="o.v" :label="o.l" />
+          </el-select>
+        </el-form-item>
+      </el-col>
+      <el-col :span="24">
+        <el-form-item label="说明">
+          <el-input v-model="form.description" placeholder="一句话说明这个任务做什么" />
+        </el-form-item>
+      </el-col>
+    </el-row>
 
     <!-- 类型专属参数（动态渲染，来自后端 schema） -->
-    <div class="f-head">执行参数</div>
-    <template v-for="f in currentSchema" :key="f.key">
-      <div class="f-row">
-        <label>{{ f.label }} <b v-if="f.required">*</b></label>
-        <!-- 下拉 -->
-        <select v-if="f.type === 'select'"
-                v-model="form.params[f.key]">
-          <option value=""></option>
-          <option v-for="op in f.options" :key="op" :value="op">{{ op }}</option>
-        </select>
-        <!-- 开关 -->
-        <span v-else-if="f.type === 'bool'" class="f-bool">
-          <label class="switch">
-            <input type="checkbox" v-model="form.params[f.key]" />
-            <span class="slider"></span>
-          </label>
-          <span class="bool-text">{{ form.params[f.key] ? '是' : '否' }}</span>
-        </span>
-        <!-- 数组（args，空格分隔） -->
-        <span v-else-if="f.type === 'args'" class="f-args">
-          <input v-model="argsText[f.key]" :placeholder="f.label + '（空格分隔，可选）'"
-                 @change="applyArgs(f.key)" />
-        </span>
-        <!-- 文本 -->
-        <input v-else type="text" v-model="form.params[f.key]" :placeholder="f.label" />
-      </div>
-    </template>
+    <div class="fn-fhead">执行参数</div>
+    <el-row :gutter="16">
+      <el-col v-for="f in currentSchema" :key="f.key" :xs="24" :md="12">
+        <el-form-item :label="f.label" :required="f.required">
+          <!-- 下拉 -->
+          <el-select v-if="f.type === 'select'" v-model="form.params[f.key]" clearable style="width:100%">
+            <el-option v-for="op in f.options" :key="op" :value="op" :label="op" />
+          </el-select>
+          <!-- 开关 -->
+          <el-switch v-else-if="f.type === 'bool'"
+                     v-model="form.params[f.key]"
+                     :active-text="form.params[f.key] ? '是' : '否'"
+                     style="--el-switch-on-color: var(--primary)" />
+          <!-- 数组（args，空格分隔） -->
+          <el-input v-else-if="f.type === 'args'" v-model="argsText[f.key]"
+                    :placeholder="f.label + '（空格分隔，可选）'" @change="applyArgs(f.key)" />
+          <!-- 文本 -->
+          <el-input v-else v-model="form.params[f.key]" :placeholder="f.label" />
+        </el-form-item>
+      </el-col>
+    </el-row>
 
-    <div class="f-head">调度配置</div>
-    <div class="f-row">
-      <label>定时(Cron)</label>
-      <input v-model="form.schedule" placeholder="如 */5 * * * *（留空仅手动触发）" />
-    </div>
-    <div class="f-row">
-      <label>超时(秒)</label>
-      <input type="number" min="0" v-model.number="form.timeout_s" placeholder="0=不限" />
-    </div>
-    <div class="f-row">
-      <label>启用</label>
-      <span class="f-bool">
-        <label class="switch">
-          <input type="checkbox" v-model="form.enabled" />
-          <span class="slider"></span>
-        </label>
-        <span class="bool-text">{{ form.enabled ? '已启用' : '已停用' }}</span>
-      </span>
-    </div>
+    <div class="fn-fhead">调度配置</div>
+    <el-row :gutter="16">
+      <el-col :xs="24" :md="12">
+        <el-form-item label="定时(Cron)">
+          <el-input v-model="form.schedule" placeholder="如 */5 * * * *（留空仅手动触发）" />
+        </el-form-item>
+      </el-col>
+      <el-col :xs="24" :md="12">
+        <el-form-item label="超时(秒)">
+          <el-input-number v-model.number="form.timeout_s" :min="0" style="width:100%"
+                           placeholder="0=不限" />
+        </el-form-item>
+      </el-col>
+      <el-col :span="24">
+        <el-form-item label="启用">
+          <el-switch v-model="form.enabled"
+                     :active-text="form.enabled ? '已启用' : '已停用'"
+                     style="--el-switch-on-color: var(--primary)" />
+        </el-form-item>
+      </el-col>
+    </el-row>
 
-    <div class="f-actions">
-      <button type="button" class="ghost" @click="onCancel">取消</button>
-      <button type="submit" class="primary">保存</button>
-    </div>
-  </form>
+    <el-row justify="end" class="fn-actions">
+      <el-form-item>
+        <el-button @click="onCancel">取消</el-button>
+        <el-button type="primary" @click="onSubmit">保存</el-button>
+      </el-form-item>
+    </el-row>
+  </el-form>
 </template>
 
 <style scoped>
-.jobform { display: flex; flex-direction: column; gap: 12px; }
-.f-row { display: flex; flex-direction: column; gap: 5px; }
-.f-row label { font-size: 13px; color: var(--muted); }
-.f-row label b { color: var(--danger); }
-.f-row input, .f-row select {
-  background: var(--panel-2); color: var(--text);
-  border: 1px solid var(--border); border-radius: 7px;
-  padding: 8px 10px; font-size: 13px; width: 100%;
-}
-.f-head {
-  margin-top: 6px; font-size: 12px; color: var(--muted);
+.jobform { display: block; }
+.fn-fhead {
+  margin: 6px 0 12px; font-size: 12px; color: var(--muted);
   font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
   border-bottom: 1px solid var(--border); padding-bottom: 4px;
 }
-.f-bool { display: flex; align-items: center; gap: 10px; }
-.f-bool .bool-text { font-size: 13px; }
-.f-args input { width: 100%; }
-.switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: none; }
-.switch input { opacity: 0; width: 0; height: 0; }
-.slider {
-  position: absolute; cursor: pointer; inset: 0;
-  background: var(--panel-2); border: 1px solid var(--border);
-  border-radius: 22px; transition: .2s;
-}
-.slider::before {
-  content: ''; position: absolute; height: 16px; width: 16px; left: 3px; top: 2px;
-  background: var(--muted); border-radius: 50%; transition: .2s;
-}
-.switch input:checked + .slider { background: var(--primary); border-color: var(--primary); }
-.switch input:checked + .slider::before { transform: translateX(17px); background: #fff; }
-.f-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
-.f-actions button { padding: 8px 18px; font-size: 13px; }
-button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+.fn-actions { margin-top: 8px; }
 </style>
