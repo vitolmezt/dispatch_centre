@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { fetchRun, abortRun, stopRun } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel } from '../constants'
 import { refreshTick, bump } from '../store/refresh'
+import { toast } from '../store/toast'
 
 const route = useRoute()
 const run = ref(null)
@@ -25,25 +26,28 @@ const isRunning = computed(() => run.value?.status === 'RUNNING')
 const canStop = computed(() => !!run.value?.pid)
 
 async function onAbort() {
-  if (!window.confirm('中止该运行?')) return
-  await abortRun(run.value.id)
+  try {
+    await abortRun(run.value.id)
+    toast.info(`已发送中止请求「${run.value.job_name}」`)
+  } catch (e) {
+    toast.error('中止失败: ' + (e?.response?.data?.detail || e.message))
+  }
   bump() // 通知列表页刷新
   load()
 }
 
 async function onStop() {
-  if (!window.confirm(`停止后台进程 (PID ${run.value.pid})？`)) return
   try {
     const r = await stopRun(run.value.id)
     if (r.stop) {
-      alert('已发送停止指令')
+      toast.success(`已停止进程 (PID ${run.value.pid})`)
     } else if (r.reason === 'no_pid') {
-      alert('该记录没有记录 PID')
+      toast.info('该记录没有记录 PID')
     } else {
-      alert('进程可能已不存在或停止失败')
+      toast.error('停止失败: 进程可能已不存在或停止失败')
     }
   } catch (e) {
-    alert('停止失败: ' + (e?.response?.data?.detail || e.message))
+    toast.error('停止失败: ' + (e?.response?.data?.detail || e.message))
   }
   bump()
   load()

@@ -73,11 +73,14 @@ class Scheduler:
 
     def on_finished(self, run: Run):
         with self._lock:
+            was_present = run.id in self.running
             self.running.pop(run.id, None)
         self.store.save_run(run)
         logger.info(f"Job[{run.job_name}] run[{run.id}] -> {run.status}")
-        self.broadcast({"type": "run", "event": "finished", "run_id": run.id,
-                        "job_name": run.job_name, "status": run.status})
+        # 仅当 run 确实还在"运行表"时才广播 finished，避免与 abort/stop 主动结束重复广播。
+        if was_present:
+            self.broadcast({"type": "run", "event": "finished", "run_id": run.id,
+                            "job_name": run.job_name, "status": run.status})
 
     # ---------- SSE 实时事件推送 ----------
     def subscribe(self) -> queue.Queue:
@@ -269,13 +272,19 @@ class Scheduler:
         return self._trigger_job(job_name, "api")
 
     def abort(self, run_id: str) -> bool:
+        """中止一个运行中的实例。结束其进程并把该 run 标记为 KILLED.
+
+        即使 worker 线程因阻塞读(stdout 等待)而粘住、无法立刻返回，这里也会主动把
+        run 从运行表移除、落库并广播 finished(KILLED)，保证前端状态及时刷新。
+        """
         with self._lock:
             run = self.running.get(run_id)
             if run is None:
                 return False
-            return True
-        # 通过 executor 中止底层进程（需要记录 Popen 引用）
-        return self.executor.abort(run)
+        # 杀进程（优先 Popen 引用，若已脱离跟踪则退回按持久化 PID 杀，兼容阻塞读卡住的情况）
+        self.executor.abort(run)
+        self._finalize_user_stop(run, "用户中止", "KILLED")
+        return True
 
     def stop(self, run_id: str) -> dict:
         """停止一个以 detach 方式启动的后台进程（按记录的 PID 定向 kill）.
@@ -292,17 +301,31 @@ class Scheduler:
         if not pid:
             return {"ok": True, "stop": False, "reason": "no_pid"}
         ok = self.executor.kill_by_pid(pid)
-        # 若该进程仍在运行表中则一并标记为已结束
+        # 只要进程已停（本次杀死 / 之前已不存在），都视为停止成功，并把仍在运行的 run 标记为 KILLED
+        if not ok:
+            return {"ok": True, "stop": False, "pid": pid, "reason": "kill_failed"}
         with self._lock:
-            r = self.running.get(run_id)
-            if r is not None:
-                r.status = "KILLED"
-                r.error = "用户停止"
-                r.end = datetime.now().astimezone().isoformat(timespec="seconds")
-                self.running.pop(run_id, None)
-                run = r
-        self.store.save_run(run)
-        return {"ok": True, "stop": ok, "pid": pid, "reason": "killed" if ok else "kill_failed"}
+            in_running = run.id in self.running
+        if in_running:
+            self._finalize_user_stop(run, "用户停止", "KILLED")
+        return {"ok": True, "stop": True, "pid": pid,
+                "reason": "killed" if in_running else "already_stopped"}
+
+    def _finalize_user_stop(self, run: Run, reason: str, status: str):
+        """把 run 结束为 status，移除运行表、落库、广播 finished（幂等）."""
+        with self._lock:
+            if run.id in self.running:
+                cur = self.running[run.id]
+            else:
+                cur = run
+            cur.status = status
+            cur.error = reason
+            cur.end = cur.end or datetime.now().astimezone().isoformat(timespec="seconds")
+            was_present = run.id in self.running
+            self.running.pop(run.id, None)
+        self.store.save_run(cur)
+        self.broadcast({"type": "run", "event": "finished", "run_id": cur.id,
+                        "job_name": cur.job_name, "status": cur.status})
 
     # ---------- 指令 CRUD（持久化到数据库 jobs 表，替代 jobs.json 热改） ----------
     def add_job(self, job: Job):

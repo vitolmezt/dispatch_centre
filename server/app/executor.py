@@ -203,9 +203,12 @@ class Executor:
                             self.runner.on_log(run, line)
                 proc.wait()
                 run.exit_code = proc.returncode
-                run.status = "SUCCEEDED" if proc.returncode == 0 else "FAILED"
-                if proc.returncode != 0:
-                    run.error = f"退出码 {proc.returncode}"
+                # 已被中止/超时则保留原状态（KILLED/TIMEDOUT 由 abort/timer 设置），
+                # 否则才按退出码判定成功/失败。避免中止后被这里的 FAILED 覆盖，状态错乱。
+                if run.status not in ("KILLED", "TIMEDOUT"):
+                    run.status = "SUCCEEDED" if proc.returncode == 0 else "FAILED"
+                    if proc.returncode != 0:
+                        run.error = f"退出码 {proc.returncode}"
         except FileNotFoundError as e:
             run.status = "FAILED"
             run.error = f"找不到可执行目标: {e}"
@@ -249,6 +252,10 @@ class Executor:
             pid = int(pid)
         except (TypeError, ValueError):
             return False
+        # 目标进程已不存在（可能已被前一次中止/停止清掉）：目标就是"让它停"，
+        # 已达成即视为成功，避免前端误报"停止失败"。
+        if not Executor._pid_exists(pid):
+            return True
         try:
             if os.name == "nt":
                 r = subprocess.run(
@@ -256,12 +263,39 @@ class Executor:
                     capture_output=True,
                     timeout=10,
                 )
-                return r.returncode == 0
+                # taskkill 返回非 0（例如进程刚好退出），只要进程已不存在仍算成功。
+                return not Executor._pid_exists(pid)
             else:
                 os.kill(pid, 9)
                 return True
         except Exception:  # noqa: BLE001
             return False
+
+    @staticmethod
+    def _pid_exists(pid) -> bool:
+        """判断 PID 对应的进程是否还存在（Windows 用 tasklist，Unix 用 signal 0）."""
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return False
+        try:
+            if os.name == "nt":
+                out = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=10,
+                )
+                return str(pid) in out.stdout
+            else:
+                os.kill(pid, 0)
+                return True
+        except ProcessLookupError:
+            return False
+        except Exception:  # noqa: BLE001
+            return True  # 无法确认时保守认为仍存在，交由后续终止逻辑处理
 
     @staticmethod
     def _kill_proc(proc: subprocess.Popen):

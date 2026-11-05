@@ -40,10 +40,9 @@ async function load(runId = props.id) {
 const isRunning = computed(() => run.value?.status === 'RUNNING')
 
 async function onAbort() {
-  if (!window.confirm('中止该运行?')) return
   try {
     await abortRun(run.value.id)
-    toast.info('已发送中止请求')
+    toast.info(`已发送中止请求「${run.value.job_name}」`)
     bump() // 通知列表页刷新
     load()
   } catch (e) {
