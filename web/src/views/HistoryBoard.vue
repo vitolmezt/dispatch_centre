@@ -20,12 +20,26 @@ let qTimer = null
 const statusOptions = Object.entries(dict.groups?.STATUS || {}).map(([v, l]) => ({ v, l }))
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
 
+// 排序：默认按执行开始时间倒序（最近执行的在前）
+const sortField = ref('start')
+const sortOrder = ref('desc')
+function toggleSort(field) {
+  if (sortField.value === field) sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
+  else { sortField.value = field; sortOrder.value = 'desc' }
+  page.value = 1
+  load()
+}
+function sortIcon(field) {
+  if (sortField.value !== field) return ''
+  return sortOrder.value === 'desc' ? '▼' : '▲'
+}
+
 function fmtT(s) { return (s || '').replace('T', ' ').slice(5, 19) }
 
 async function load() {
   loading.value = true
   try {
-    const params = { page: page.value, page_size: pageSize }
+    const params = { page: page.value, page_size: pageSize, sort: sortField.value, order: sortOrder.value }
     if (statusFilter.value) params.status = statusFilter.value
     if (typeFilter.value) params.type = typeFilter.value
     if (qFilter.value.trim()) params.q = qFilter.value.trim()
@@ -89,11 +103,11 @@ function reset() {
         <thead>
           <tr>
             <th>Run ID</th>
-            <th>任务</th>
+            <th class="sortable" @click="toggleSort('name')">任务 {{ sortIcon('name') }}</th>
             <th>类型</th>
             <th>触发</th>
             <th>状态</th>
-            <th>执行开始时间</th>
+            <th class="sortable" @click="toggleSort('start')">执行开始时间 {{ sortIcon('start') }}</th>
             <th>执行结束时间</th>
             <th>耗时</th>
             <th>退出码</th>
@@ -149,6 +163,8 @@ function reset() {
 /* 操作列：表头和按钮组都居中 */
 .tb th.col-ops { text-align: center; }
 .tb td.ops { text-align: center; }
+.tb th.sortable { cursor: pointer; user-select: none; }
+.tb th.sortable:hover { color: var(--primary); }
 .tb .stcol { vertical-align: middle; }
 .tb .stcol .badge, .tb td .badge { display: inline-flex; align-items: center; vertical-align: middle; }
 .ops { display: flex; justify-content: center; align-items: center; gap: 6px; white-space: nowrap; }

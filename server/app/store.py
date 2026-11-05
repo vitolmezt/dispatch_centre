@@ -34,7 +34,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS jobs (
                     name TEXT PRIMARY KEY,
                     job_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT
                 )
             """)
             c.execute("""
@@ -48,9 +49,14 @@ class Store:
                     status TEXT
                 )
             """)
-            # 兼容旧库：补 job_type 列（若不存在）
-            cols = [r["name"] for r in c.execute("PRAGMA table_info(runs)").fetchall()]
-            if "job_type" not in cols:
+            # 兼容旧库：jobs 表补 created_at 列，并回填为更新时间的首包时间
+            cols = [r["name"] for r in c.execute("PRAGMA table_info(jobs)").fetchall()]
+            if "created_at" not in cols:
+                c.execute("ALTER TABLE jobs ADD COLUMN created_at TEXT")
+                c.execute("UPDATE jobs SET created_at=updated_at WHERE created_at IS NULL")
+            # 兼容旧库：runs 表补 job_type 列（若不存在）
+            rcols = [r["name"] for r in c.execute("PRAGMA table_info(runs)").fetchall()]
+            if "job_type" not in rcols:
                 c.execute("ALTER TABLE runs ADD COLUMN job_type TEXT")
             c.execute("CREATE INDEX IF NOT EXISTS idx_runs_job ON runs(job_name)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)")
@@ -58,22 +64,40 @@ class Store:
 
     # ---- jobs ----
     def upsert_jobs(self, jobs: List[Job]):
+        """保存任务：更新 updated_at，created_at 首次写入后保持不变（数据库列为权威来源）."""
         with self._lock:
             c = self._conn.cursor()
             for j in jobs:
+                now = datetime.now(timezone.utc).isoformat()
+                row = c.execute("SELECT created_at FROM jobs WHERE name=?",
+                                (j.name,)).fetchone()
+                # 已有任务沿用库内 created_at；新任务首次写入时间
+                created = (row["created_at"] if row and row["created_at"]
+                           else j.created_at or now)
+                j.created_at = created
+                j.updated_at = now
                 c.execute(
-                    "INSERT OR REPLACE INTO jobs (name, job_json, updated_at) VALUES (?,?,?)",
-                    (j.name, json.dumps(j.to_dict()), datetime.now(timezone.utc).isoformat()),
+                    "INSERT INTO jobs (name, job_json, updated_at, created_at) "
+                    "VALUES (?,?,?,?) "
+                    "ON CONFLICT(name) DO UPDATE SET "
+                    "job_json=excluded.job_json, updated_at=excluded.updated_at, "
+                    "created_at=excluded.created_at",
+                    (j.name, json.dumps(j.to_dict()), now, created),
                 )
             self._conn.commit()
 
     def load_jobs(self) -> Dict[str, Job]:
         with self._lock:
             c = self._conn.cursor()
-            rows = c.execute("SELECT job_json FROM jobs").fetchall()
+            rows = c.execute("SELECT job_json, created_at, updated_at FROM jobs").fetchall()
         result: Dict[str, Job] = {}
         for r in rows:
             job = Job.from_dict(json.loads(r["job_json"]))
+            # created_at/updated_at 以数据库列为权威来源（旧库 job_json 无这两个字段）
+            if not job.created_at and r["created_at"]:
+                job.created_at = r["created_at"]
+            if not job.updated_at and r["updated_at"]:
+                job.updated_at = r["updated_at"]
             result[job.name] = job
         return result
 
@@ -109,7 +133,8 @@ class Store:
             self._conn.commit()
 
     def _run_query(self, /, status=None, job_name=None, job_type=None,
-                   name_like=None, offset=None, limit=None):
+                   name_like=None, sort=None, order="desc",
+                   offset=None, limit=None):
         """构造 runs 查询的 where 段与参数."""
         sql = "SELECT run_json FROM runs WHERE 1=1"
         params: List[Any] = []
@@ -125,22 +150,27 @@ class Store:
         if name_like:
             sql += " AND job_name LIKE ?"
             params.append(f"%{name_like}%")
-        order = " ORDER BY started_at DESC"
+        # 排序字段白名单，仅允许受支持的列名，避免 SQL 注入
+        col = {"start": "started_at", "name": "job_name"}.get(
+            sort if sort in ("start", "name") else "start", "started_at")
+        direction = "ASC" if str(order).lower() == "asc" else "DESC"
+        order_sql = f" ORDER BY {col} {direction}"
         if limit is not None and offset is not None:
-            sql = sql + order + " LIMIT ? OFFSET ?"
+            sql = sql + order_sql + " LIMIT ? OFFSET ?"
             params += [limit, offset]
         elif limit is not None:
-            sql = sql + order + " LIMIT ?"
+            sql = sql + order_sql + " LIMIT ?"
             params.append(limit)
         else:
-            sql += order
+            sql += order_sql
         return sql, params
 
     def query_runs(self, *, status=None, job_name=None, job_type=None, name_like=None,
-                   offset=0, limit=200) -> List[Run]:
-        """分页 + 过滤查询 runs，返回 [Run, ...]."""
+                   sort=None, order="desc", offset=0, limit=200) -> List[Run]:
+        """分页 + 过滤 + 排序查询 runs，返回 [Run, ...]."""
         sql, params = self._run_query(status=status, job_name=job_name,
                                       job_type=job_type, name_like=name_like,
+                                      sort=sort, order=order,
                                       offset=offset, limit=limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()

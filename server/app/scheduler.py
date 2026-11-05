@@ -51,6 +51,8 @@ class Scheduler:
         self.groups: Dict[str, dict] = {}  # group_key -> {key,name,remark,task_type}
         self.running: Dict[str, Run] = {}  # run_id -> Run（进行中）
         self._lock = threading.RLock()
+        # 已广播过 finished 的 run_id 集合：保证中止/结束只推送一次 finished 事件
+        self._finished: set = set()
         # SSE 实时事件订阅者队列（每个连接一个 Queue）
         self._subscribers: List[queue.Queue] = []
         self._sub_lock = threading.Lock()
@@ -73,14 +75,20 @@ class Scheduler:
 
     def on_finished(self, run: Run):
         with self._lock:
-            was_present = run.id in self.running
             self.running.pop(run.id, None)
         self.store.save_run(run)
         logger.info(f"Job[{run.job_name}] run[{run.id}] -> {run.status}")
-        # 仅当 run 确实还在"运行表"时才广播 finished，避免与 abort/stop 主动结束重复广播。
-        if was_present:
-            self.broadcast({"type": "run", "event": "finished", "run_id": run.id,
-                            "job_name": run.job_name, "status": run.status})
+        self.publish_finished(run)
+
+    def publish_finished(self, run: "Run"):
+        """幂等推送 finished 事件：同一 run 只广播一次，避免 abort/超时与 worker 结束
+        并发时重复推送，导致前端弹两次提示。"""
+        with self._lock:
+            if run.id in self._finished:
+                return
+            self._finished.add(run.id)
+        self.broadcast({"type": "run", "event": "finished", "run_id": run.id,
+                        "job_name": run.job_name, "status": run.status})
 
     # ---------- SSE 实时事件推送 ----------
     def subscribe(self) -> queue.Queue:
@@ -312,7 +320,7 @@ class Scheduler:
                 "reason": "killed" if in_running else "already_stopped"}
 
     def _finalize_user_stop(self, run: Run, reason: str, status: str):
-        """把 run 结束为 status，移除运行表、落库、广播 finished（幂等）."""
+        """把 run 结束为 status，移除运行表、落库、幂等广播 finished."""
         with self._lock:
             if run.id in self.running:
                 cur = self.running[run.id]
@@ -321,11 +329,9 @@ class Scheduler:
             cur.status = status
             cur.error = reason
             cur.end = cur.end or datetime.now().astimezone().isoformat(timespec="seconds")
-            was_present = run.id in self.running
             self.running.pop(run.id, None)
         self.store.save_run(cur)
-        self.broadcast({"type": "run", "event": "finished", "run_id": cur.id,
-                        "job_name": cur.job_name, "status": cur.status})
+        self.publish_finished(cur)
 
     # ---------- 指令 CRUD（持久化到数据库 jobs 表，替代 jobs.json 热改） ----------
     def add_job(self, job: Job):
@@ -388,7 +394,7 @@ class Scheduler:
         except Exception:  # noqa: BLE001
             pass
 
-    def jobs_view(self) -> List[dict]:
+    def jobs_view(self, *, sort: Optional[str] = None, order: str = "desc") -> List[dict]:
         with self._lock:
             items = []
             for job in self.jobs.values():
@@ -396,10 +402,21 @@ class Scheduler:
                 last = self.store.get_runs(limit=1, job_name=job.name)
                 last_run = last[0] if last else None
                 items.append(job_to_api(job, running_count, last_run, running_count > 0))
-            return items
+        return self._sort_jobs_api(items, sort, order)
+
+    def _sort_jobs_api(self, items: List[dict], sort: Optional[str], order: str) -> List[dict]:
+        """对已组装的 job API 视图按字段排序（默认创建时间倒序，新任务在前）."""
+        field = sort if sort in ("created_at", "name") else "created_at"
+        reverse = order != "asc"
+        if field == "name":
+            items.sort(key=lambda d: (d.get("name") or ""), reverse=reverse)
+        else:
+            items.sort(key=lambda d: (d.get("created_at") or d.get("updated_at") or ""), reverse=reverse)
+        return items
 
     def jobs_search(self, *, job_type: Optional[str] = None, enabled: Optional[str] = None,
-                    q: Optional[str] = None, offset: int = 0, limit: int = 50) -> dict:
+                    q: Optional[str] = None, sort: Optional[str] = None, order: str = "desc",
+                    offset: int = 0, limit: int = 50) -> dict:
         """按类型 / 启用 / 名称模糊 过滤菜单项并分页. 返回 {total, items}."""
         with self._lock:
             filtered = list(self.jobs.values())
@@ -412,14 +429,15 @@ class Scheduler:
             lq = q.lower()
             filtered = [j for j in filtered if lq in j.name.lower()]
         total = len(filtered)
-        items = filtered[offset:offset + limit]
+        # 先组装 API 视图再排序（含全部，排序不受分页影响）
         out = []
-        for job in items:
+        for job in filtered:
             running_count = sum(1 for r in self.running.values() if r.job_name == job.name)
             last = self.store.get_runs(limit=1, job_name=job.name)
             last_run = last[0] if last else None
             out.append(job_to_api(job, running_count, last_run, running_count > 0))
-        return {"total": total, "items": out}
+        out = self._sort_jobs_api(out, sort, order)
+        return {"total": total, "items": out[offset:offset + limit]}
 
     def groups_view(self) -> List[dict]:
         """分组元信息列表（含每组任务计数）. 空分组(无任务)也可单独列出."""
@@ -429,7 +447,20 @@ class Scheduler:
             out.append({"key": key, **g, "count": count})
         return out
 
+    def get_running(self, run_id: str):
+        """返回内存中某运行实例（实时日志），不存在返回 None."""
+        with self._lock:
+            return self.running.get(run_id)
+
+    def _sort_key(self, obj, field: str):
+        """按字段取排序键：时间字段优先按可比较字符串，缺失值排到末尾."""
+        v = getattr(obj, field, None)
+        if v is None:
+            return ""
+        return v  # ISO 时间字符串 / 名称字符串均可直接比较
+
     def running_view(self, *, job_type: Optional[str] = None, q: Optional[str] = None,
+                     sort: Optional[str] = None, order: str = "desc",
                      offset: int = 0, limit: int = 100) -> dict:
         with self._lock:
             runs = list(self.running.values())
@@ -438,6 +469,10 @@ class Scheduler:
         if q:
             lq = q.lower()
             runs = [r for r in runs if lq in r.job_name.lower()]
+        # 排序：默认按开始时间倒序（新启动的在最前）
+        field = sort if sort in ("start", "name_created", "name") else "start"
+        attr = {"start": "start", "name": "job_name"}.get(field, "start")
+        runs.sort(key=lambda r: self._sort_key(r, attr), reverse=(order != "asc"))
         total = len(runs)
         # 运行中通常无分页，但保持与历史一致返回 total/items
         sliced = runs[offset:offset + limit]
@@ -445,10 +480,11 @@ class Scheduler:
 
     def history_view(self, status: Optional[str] = None, job_name: Optional[str] = None,
                      job_type: Optional[str] = None, q: Optional[str] = None,
+                     sort: Optional[str] = None, order: str = "desc",
                      offset: int = 0, limit: int = 50) -> dict:
         total = self.store.count_runs(status=status, job_name=job_name, job_type=job_type, name_like=q)
         runs = self.store.query_runs(status=status, job_name=job_name, job_type=job_type,
-                                     name_like=q, offset=offset, limit=limit)
+                                     name_like=q, sort=sort, order=order, offset=offset, limit=limit)
         return {"total": total, "items": [r.to_dict(include_log=True) for r in runs]}
 
 

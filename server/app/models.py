@@ -97,6 +97,8 @@ class Job:
     timeout_s: int = 0
     enabled: bool = True
     description: str = ""
+    created_at: Optional[str] = None  # 创建时间（ISO），首次落库时写入
+    updated_at: Optional[str] = None  # 更新时间（ISO），每次保存时刷新
 
     @property
     def executable(self) -> str:
@@ -155,6 +157,8 @@ class Job:
             timeout_s=int(d.get("timeout_s", 0) or 0),
             enabled=bool(d.get("enabled", True)),
             description=str(d.get("description", "")),
+            created_at=d.get("created_at"),
+            updated_at=d.get("updated_at"),
         )
         job.params = job._params(d)
         return job

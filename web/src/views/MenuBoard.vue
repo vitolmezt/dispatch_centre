@@ -21,6 +21,27 @@ const typeFilter = ref('')
 const enabledFilter = ref('')
 const qFilter = ref('')
 
+// 排序：默认按创建时间倒序（新任务在前）
+const sortField = ref('created_at')
+const sortOrder = ref('desc')
+
+function toggleSort(field) {
+  if (sortField.value === field) {
+    sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    sortField.value = field
+    sortOrder.value = 'desc'
+  }
+  page.value = 1
+  load()
+}
+
+function sortIcon(field) {
+  if (sortField.value !== field) return ''
+  return sortOrder.value === 'desc' ? '▼' : '▲'
+}
+const fmtTime = (s) => (s || '').replace('T', ' ').slice(0, 16)
+
 // 启动确认：记录当前待触发的任务名，气泡显示在其按钮正上方
 const confirmRun = ref(null)
 const running = ref(false)
@@ -39,7 +60,7 @@ const enabledOptions = Object.entries(dict.groups?.ENABLED || {}).map(([v, l]) =
 async function load() {
   loading.value = true
   try {
-    const params = { page: page.value, page_size: pageSize }
+    const params = { page: page.value, page_size: pageSize, sort: sortField.value, order: sortOrder.value }
     if (typeFilter.value) params.type = typeFilter.value
     if (enabledFilter.value) params.enabled = enabledFilter.value
     if (qFilter.value.trim()) params.q = qFilter.value.trim()
@@ -187,18 +208,20 @@ watch(refreshTick, () => load())
     <div class="panel">
       <table class="mb">
         <colgroup>
-          <col style="width:22%" />
-          <col style="width:13%" />
-          <col />
-          <col style="width:12%" />
-          <col style="width:15%" />
           <col style="width:20%" />
+          <col style="width:10%" />
+          <col style="width:14%" />
+          <col style="width:18%" />
+          <col style="width:11%" />
+          <col style="width:11%" />
+          <col style="width:16%" />
         </colgroup>
         <thead>
           <tr>
-            <th>任务名</th>
+            <th class="sortable" @click="toggleSort('name')">任务名 {{ sortIcon('name') }}</th>
             <th>类型</th>
             <th>描述</th>
+            <th class="sortable" @click="toggleSort('created_at')">创建时间 {{ sortIcon('created_at') }}</th>
             <th>启用</th>
             <th>最近状态</th>
             <th class="col-ops">操作</th>
@@ -211,6 +234,7 @@ watch(refreshTick, () => load())
             <td class="desc" :title="job.description || ''">
               <span class="desc-inner">{{ job.description || '—' }}</span>
             </td>
+            <td class="mono">{{ fmtTime(job.created_at) || '—' }}</td>
             <td>
               <span :class="['toggle', job.enabled ? 'on' : 'off']">{{ enabledLabel(job.enabled) }}</span>
             </td>
@@ -241,13 +265,10 @@ watch(refreshTick, () => load())
               <button class="detail-btn" style="margin-left:4px" @click="openJob(job.name)">详情 ›</button>
             </td>
           </tr>
-          <tr v-if="!loading && !items.length">
-            <td colspan="6" class="muted" style="text-align:center; padding:28px">
-              没有匹配的任务，换个搜索条件试试
+          <tr v-if="!items.length">
+            <td colspan="7" class="muted" style="text-align:center; padding:28px">
+              {{ loading ? '加载中…' : '没有匹配的任务，换个搜索条件试试' }}
             </td>
-          </tr>
-          <tr v-if="loading">
-            <td colspan="6" class="muted" style="text-align:center; padding:28px">加载中…</td>
           </tr>
         </tbody>
       </table>
@@ -298,6 +319,9 @@ watch(refreshTick, () => load())
 .mb td.ops { text-align: center; }
 /* 操作列须允许子元素溢出，否则确认弹窗会被单元格裁掉 */
 .mb td.ops { overflow: visible; }
+/* 可点击排序的表头 */
+.mb th.sortable { cursor: pointer; user-select: none; }
+.mb th.sortable:hover { color: var(--primary); }
 /* 描述：居中 + 单行省略，hover 看完整 */
 .mb td.desc { width: auto; }
 .mb td.desc .desc-inner {

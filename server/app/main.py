@@ -100,21 +100,24 @@ def _shutdown():
 def list_jobs(type: Optional[str] = Query(None, alias="type"),
               enabled: Optional[str] = Query(None),
               q: Optional[str] = Query(None),
+              sort: Optional[str] = Query(None),   # created_at | name，默认 created_at
+              order: Optional[str] = Query("desc"),  # asc | desc
               page: int = Query(1, ge=1),
               page_size: int = Query(50, ge=1, le=500),
               all: bool = Query(False)):
     """菜单：按 类型(enabled 常量 key) / 启用 / 名称模糊 搜索 + 分页.
 
-    - page / page_size：分页（第 1 页起）
+    - sort / order：排序字段与方向（默认按创建时间倒序，新任务在前）
     - all=true：忽略分页返回全部（兼容旧调用）
     返回 {total, page, page_size, items}
     """
     s = get_scheduler()
     if all:
-        items = s.jobs_view()
+        items = s.jobs_view(sort=sort, order=order)
         return {"total": len(items), "page": 1, "page_size": len(items), "items": items}
     offset = (page - 1) * page_size
-    result = s.jobs_search(job_type=type, enabled=enabled, q=q, offset=offset, limit=page_size)
+    result = s.jobs_search(job_type=type, enabled=enabled, q=q, sort=sort, order=order,
+                           offset=offset, limit=page_size)
     return {"total": result["total"], "page": page, "page_size": page_size, "items": result["items"]}
 
 
@@ -191,9 +194,11 @@ def list_groups():
 @app.get("/api/running")
 def list_running(type: Optional[str] = Query(None, alias="type"),
                  q: Optional[str] = Query(None),
+                 sort: Optional[str] = Query(None),     # start | name，默认 start
+                 order: Optional[str] = Query("desc"),   # asc | desc
                  page: int = Query(1, ge=1),
                  page_size: int = Query(100, ge=1, le=1000)):
-    result = get_scheduler().running_view(job_type=type, q=q,
+    result = get_scheduler().running_view(job_type=type, q=q, sort=sort, order=order,
                                           offset=(page - 1) * page_size, limit=page_size)
     return {"total": result["total"], "page": page, "page_size": page_size, "items": result["items"]}
 
@@ -203,20 +208,28 @@ def list_running(type: Optional[str] = Query(None, alias="type"),
 def history(status: Optional[str] = None, job: Optional[str] = None,
             type: Optional[str] = Query(None, alias="type"),
             q: Optional[str] = None,
+            sort: Optional[str] = Query(None),     # start | name，默认 start
+            order: Optional[str] = Query("desc"),   # asc | desc
             page: int = Query(1, ge=1),
             page_size: int = Query(50, ge=1, le=500),
             all: bool = Query(False)):
     if all:
         result = get_scheduler().history_view(status=status, job_name=job,
-                                              job_type=type, q=q, limit=200000)
+                                              job_type=type, q=q, sort=sort, order=order,
+                                              limit=200000)
         return {"total": result["total"], "page": 1, "page_size": result["total"], "items": result["items"]}
     return get_scheduler().history_view(status=status, job_name=job, job_type=type, q=q,
+                                        sort=sort, order=order,
                                         offset=(page - 1) * page_size, limit=page_size)
 
 
 @app.get("/api/runs/{run_id}")
 def run_detail(run_id: str):
     s = get_scheduler()
+    # 运行中实例优先返回内存中的实时日志；否则读取数据库。
+    mem = s.get_running(run_id)
+    if mem is not None:
+        return mem.to_dict(include_log=True)
     run = s.store.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run 不存在")

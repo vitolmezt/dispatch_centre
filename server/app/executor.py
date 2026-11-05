@@ -146,69 +146,53 @@ class Executor:
             if job.params.get("env"):
                 env.update({str(k): str(v) for k, v in job.params["env"].items()})
             cwd_env = job.params.get("workdir") or None
+            # 后台常驻：进程独立存活，状态保持“进行中”，不启用超时，但照样读日志、可中止。
             detach = bool(job.params.get("detach", False))
 
             proc = subprocess.Popen(
                 argv,
-                stdout=subprocess.DEVNULL if detach else subprocess.PIPE,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 cwd=cwd_env,
                 env=env,
                 text=True,
-                # 统一按 UTF-8 读取子进程输出（Windows 下 text=True 默认用 GBK，
-                # 会因无法解码 UTF-8 的中文/特殊字符而抛 UnicodeDecodeError 使读取线程崩溃，
-                # 进而被误判为"启动失败"。errors="replace" 兜底，非法字节仅替换不中断。）
+                # UTF-8 读取子进程输出，非法字节替换为占位符
                 encoding="utf-8",
                 errors="replace",
-                bufsize=1 if not detach else 0,
+                bufsize=1,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 if Executor._is_windows()
                 else 0,
             )
             run.pid = proc.pid
 
-            if detach:
-                # ------------------- 启动即成功（fire-and-forget）-------------------
-                # 独立的隐藏后台进程：不读其 stdout，调度中心退出也不连带杀掉。
-                # run.pid 记录 PID，供前端“停止进程”时用 taskkill /PID 精准定向终止。
-                # 注意：这里不手动触发 on_started/on_finished，统一交由下方 finally 触发一次
-                # on_finished，避免对同一 run 重复上报 finished 事件/重复落库。
-                run.exit_code = 0
-                run.status = "SUCCEEDED"
-                run.error = ""
-                # detach 进程已交付给系统，从进程跟踪表摘除（不做阻塞 wait / 读管道）。
-                with self._lock:
-                    self._procs.pop(run.id, None)
-                return
-            else:
-                with self._lock:
-                    self._procs[run.id] = proc
-                self.runner.on_started(run)
+            with self._lock:
+                self._procs[run.id] = proc
+            self.runner.on_started(run)
 
-                # 超时定时器
-                if job.timeout_s and job.timeout_s > 0:
-                    timer = threading.Timer(
-                        job.timeout_s, self._on_timeout, args=(proc, run)
-                    )
-                    timer.daemon = True
-                    timer.start()
+            # 超时定时器（后台常驻进程不上超时，随服务一直跑）
+            if not detach and job.timeout_s and job.timeout_s > 0:
+                timer = threading.Timer(
+                    job.timeout_s, self._on_timeout, args=(proc, run)
+                )
+                timer.daemon = True
+                timer.start()
 
-                # 阻塞读输出
-                if proc.stdout:
-                    for raw in proc.stdout:
-                        line = raw.rstrip("\n")
-                        if line:
-                            run.append_log(line)
-                            self.runner.on_log(run, line)
-                proc.wait()
-                run.exit_code = proc.returncode
-                # 已被中止/超时则保留原状态（KILLED/TIMEDOUT 由 abort/timer 设置），
-                # 否则才按退出码判定成功/失败。避免中止后被这里的 FAILED 覆盖，状态错乱。
-                if run.status not in ("KILLED", "TIMEDOUT"):
-                    run.status = "SUCCEEDED" if proc.returncode == 0 else "FAILED"
-                    if proc.returncode != 0:
-                        run.error = f"退出码 {proc.returncode}"
+            # 阻塞读输出（常驻进程也照样抓日志，供执行中心实时查看）
+            if proc.stdout:
+                for raw in proc.stdout:
+                    line = raw.rstrip("\n")
+                    if line:
+                        run.append_log(line)
+                        self.runner.on_log(run, line)
+            proc.wait()
+            run.exit_code = proc.returncode
+            # 中止/超时（KILLED/TIMEDOUT）状态下不再按退出码覆盖状态
+            if run.status not in ("KILLED", "TIMEDOUT"):
+                run.status = "SUCCEEDED" if proc.returncode == 0 else "FAILED"
+                if proc.returncode != 0:
+                    run.error = f"退出码 {proc.returncode}"
         except FileNotFoundError as e:
             run.status = "FAILED"
             run.error = f"找不到可执行目标: {e}"

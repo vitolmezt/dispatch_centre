@@ -1,14 +1,14 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { fetchRun, abortRun } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel } from '../constants'
-import { bump } from '../store/refresh'
+import { bump, refreshTick } from '../store/refresh'
 import { toast } from '../store/toast'
 
 /**
  * 全局右侧抽屉（约半屏宽）：展示一条执行记录的详情。
  *  - 基本信息（任务名 / 类型 / 触发 / PID / 开始 / 结束 / 耗时 / 退出码 / 错误）
- *  - 运行日志（实时）
+ *  - 运行日志（实时）：运行中每 2.5s 轮询一次 + 每次全局事件立即刷新
  * 点击抽屉外的遮罩或 × 号均可关闭。
  */
 
@@ -20,14 +20,16 @@ const emit = defineEmits(['close'])
 const open = ref(false)
 const run = ref(null)
 const err = ref('')
+let timer = null
 
 watch(() => props.id, (v) => {
   if (v) { open.value = true; load(v) }
   else { open.value = false }
 }, { immediate: true })
 
+const isRunning = computed(() => run.value?.status === 'RUNNING')
+
 async function load(runId = props.id) {
-  run.value = null
   err.value = ''
   if (!runId) return
   try {
@@ -35,14 +37,28 @@ async function load(runId = props.id) {
   } catch (e) {
     err.value = '加载失败: ' + (e?.message || e)
   }
+  refreshTimer()
 }
 
-const isRunning = computed(() => run.value?.status === 'RUNNING')
+// 运行期间定时轮询，实时抓取终端输出
+function refreshTimer() {
+  clearInterval(timer)
+  if (open.value && run.value?.status === 'RUNNING') {
+    timer = setInterval(async () => {
+      try { run.value = await fetchRun(props.id) } catch (e) { /* keep last */ }
+    }, 2500)
+  }
+}
+
+// 其它页面全局事件后也刷新一次
+watch(refreshTick, () => { if (open.value) load() })
+
+onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
 async function onAbort() {
   try {
     await abortRun(run.value.id)
-    toast.info(`已发送中止请求「${run.value.job_name}」`)
+    // 不在本地弹提示，后端中止成功的 finished 事件会经 SSE 弹出「已中止」
     bump() // 通知列表页刷新
     load()
   } catch (e) {

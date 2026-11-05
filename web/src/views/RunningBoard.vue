@@ -16,8 +16,22 @@ const qFilter = ref('')
 
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
 
+// 排序：默认按开始时间倒序（新启动的在最前）
+const sortField = ref('start')
+const sortOrder = ref('desc')
+function toggleSort(field) {
+  if (sortField.value === field) sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
+  else { sortField.value = field; sortOrder.value = 'desc' }
+  page.value = 1
+  load()
+}
+function sortIcon(field) {
+  if (sortField.value !== field) return ''
+  return sortOrder.value === 'desc' ? '▼' : '▲'
+}
+
 async function load() {
-  const params = { page: page.value, page_size: pageSize }
+  const params = { page: page.value, page_size: pageSize, sort: sortField.value, order: sortOrder.value }
   if (typeFilter.value) params.type = typeFilter.value
   if (qFilter.value.trim()) params.q = qFilter.value.trim()
   const res = await fetchRunning(params)
@@ -35,10 +49,9 @@ onMounted(load)
 watch(refreshTick, () => load())
 
 async function onAbort(run) {
-  const ok = window.confirm(`中止运行 ${run.id} ？`)
-  if (!ok) return
   try {
     await abortRun(run.id)
+    // 不在本地弹提示，后端中止成功的 finished 事件会经 SSE 弹出「已中止」
     bump() // 通知其他列表页刷新
     await load()
   } catch (e) {
@@ -83,11 +96,11 @@ function reset() {
         <thead>
           <tr>
             <th>Run ID</th>
-            <th>任务</th>
+            <th class="sortable" @click="toggleSort('name')">任务 {{ sortIcon('name') }}</th>
             <th>类型</th>
             <th>触发</th>
             <th>PID</th>
-            <th>开始时间</th>
+            <th class="sortable" @click="toggleSort('start')">开始时间 {{ sortIcon('start') }}</th>
             <th>状态</th>
             <th class="col-ops">操作</th>
           </tr>
@@ -141,6 +154,8 @@ function reset() {
 /* 操作列：表头和按钮组都居中 */
 .tb th.col-ops { text-align: center; }
 .tb td.ops { text-align: center; }
+.tb th.sortable { cursor: pointer; user-select: none; }
+.tb th.sortable:hover { color: var(--primary); }
 .tb td.jname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb td .badge { display: inline-flex; align-items: center; vertical-align: middle; }
 .ops { display: flex; justify-content: center; align-items: center; gap: 6px; white-space: nowrap; }
