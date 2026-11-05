@@ -41,6 +41,7 @@ JOB_PARAM_SCHEMA: Dict[str, Dict[str, Any]] = {
         "fields": [
             {"key": "command", "label": "命令", "required": True, "type": "text"},
             {"key": "workdir", "label": "工作目录", "required": False, "type": "text"},
+            {"key": "detach", "label": "后台常驻（启动即成功，进程独立存活）", "required": False, "type": "bool"},
         ],
     },
     "SCRIPT": {
@@ -49,6 +50,7 @@ JOB_PARAM_SCHEMA: Dict[str, Dict[str, Any]] = {
             {"key": "path", "label": "脚本路径", "required": True, "type": "text"},
             {"key": "args", "label": "参数", "required": False, "type": "args"},
             {"key": "workdir", "label": "工作目录", "required": False, "type": "text"},
+            {"key": "detach", "label": "后台常驻（启动即成功，进程独立存活）", "required": False, "type": "bool"},
         ],
     },
     "PROGRAM": {
