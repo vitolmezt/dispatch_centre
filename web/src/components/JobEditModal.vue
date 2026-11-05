@@ -26,4 +26,6 @@ defineEmits(['close', 'submit'])
 
 <style scoped>
 :deep(.el-dialog__body) { padding-top: 8px !important; }
+/* 标题居中 */
+:deep(.el-dialog__header) { text-align: center !important; }
 </style>

@@ -76,4 +76,9 @@ export async function stopRun(runId) {
   return data
 }
 
+export async function pickPath(kind, options = {}) {
+  const { data } = await http.post('/fs/pick', { kind, ...options })
+  return data
+}
+
 export default http

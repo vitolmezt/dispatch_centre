@@ -14,8 +14,10 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 
 from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -329,3 +331,50 @@ def events():
 def config_info():
     return {"config_path": str(get_scheduler().config_path),
             "jobs_count": len(get_scheduler().jobs)}
+
+
+# ---------- 选择本机路径（系统原生对话框） ----------
+# 浏览器出于安全无法拿到真实本地路径，故由「后端」在本机桌面弹出
+# 系统原生文件/文件夹选择框（tkinter.filedialog），把选中的真实绝对
+# 路径返回给前端填回表单。对话框会阻塞，故放后台线程并用队列回传。
+def _run_native_picker(kind: str, title: str, initial: str, out: "queue.Queue"):
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()  # 隐藏空主窗口，只显示选择框
+        root.attributes("-topmost", True)
+        try:
+            if kind == "dir":
+                path = filedialog.askdirectory(title=title, initialdir=initial or None)
+            else:
+                initialdir = os.path.dirname(initial) if initial else None
+                path = filedialog.askopenfilename(title=title, initialdir=initialdir or None)
+        finally:
+            root.destroy()
+        out.put({"ok": True, "path": path or ""})
+    except Exception as e:  # noqa: BLE001
+        out.put({"ok": False, "error": str(e)})
+
+
+@app.post("/api/fs/pick")
+def fs_pick(payload: dict = Body(...)):
+    """在后端主机桌面弹出系统原生「打开/选文件夹」对话框，返回真实绝对路径.
+
+    body: { kind: "file" | "dir", title?: str, initial?: str }
+    返回: { path }（用户取消时 path 为空字符串）；出错返回 500。
+    """
+    kind = "file" if payload.get("kind") not in ("file", "dir") else payload["kind"]
+    title = payload.get("title") or ("请选择文件" if kind == "file" else "请选择文件夹")
+    initial = payload.get("initial") or ""
+    out: "queue.Queue" = queue.Queue()
+    threading.Thread(target=_run_native_picker, args=(kind, title, initial, out), daemon=True).start()
+    try:
+        # 用户可能长时间在对话框内操作，最多等 10 分钟
+        res = out.get(timeout=600)
+    except queue.Empty:
+        raise HTTPException(status_code=408, detail="选择超时")
+    if not res.get("ok"):
+        raise HTTPException(status_code=500, detail=f"打开选择框失败: {res.get('error')}")
+    return {"path": res.get("path", ""), "cancelled": not res.get("path")}
