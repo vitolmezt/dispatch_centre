@@ -84,6 +84,7 @@ a { color: var(--primary); text-decoration: none; }
 .badge.TIMEDOUT  { background: #3a1f0e; color: #ffa34d; }
 .badge.KILLED    { background: #332233; color: #c39; }
 .badge.NEUTRAL   { background: #23262e; color: #9aa3b2; }
+.badge.IDLE      { background: #1c1f26; color: #7a8491; }
 
 code, .mono { font-family: var(--mono); font-size: .95em; white-space: nowrap; }
 .muted { color: var(--muted); }

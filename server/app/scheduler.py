@@ -333,7 +333,7 @@ class Scheduler:
         self.store.save_run(cur)
         self.publish_finished(cur)
 
-    # ---------- 指令 CRUD（持久化到数据库 jobs 表，替代 jobs.json 热改） ----------
+    # ---------- 任务 CRUD（持久化到数据库 jobs 表，替代 jobs.json 热改） ----------
     def add_job(self, job: Job):
         with self._lock:
             self.jobs[job.name] = job
@@ -361,9 +361,9 @@ class Scheduler:
             job = self.jobs.get(name)
             if job is None:
                 return False
-            # 正在执行的指令不允许停用，避免调度语义混乱
+            # 正在执行的任务不允许停用，避免调度语义混乱
             if not enabled and any(r.job_name == name for r in self.running.values()):
-                raise ValueError(f"指令「{name}」正在执行，不能停用")
+                raise ValueError(f"任务「{name}」正在执行，不能停用")
             job.enabled = enabled
             self.store.upsert_jobs([job])
         if enabled:

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, inject, onMounted, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { jobTypeLabel, statusLabel, enabledLabel, dict } from '../constants'
+import { jobTypeLabel, enabledLabel, dict } from '../constants'
 import { fetchJobs, triggerJob, createJob, updateJob, deleteJob, enableJob, fetchJobSchema } from '../api'
 import { openJob } from '../store/drawer'
 import { refreshTick, bump } from '../store/refresh'
@@ -43,6 +43,9 @@ const running = ref(false)
 const schemas = ref({ types: {}, schemas: {} })
 const modalOpen = ref(false)
 const editingJob = ref(null) // null=新增, {..}=编辑
+// 只读查看弹窗状态：点击表格行弹出「任务详情」（样式同编辑表单，仅查看不可编辑）
+const viewOpen = ref(false)
+const viewJob = ref(null)
 
 // 操作中按钮的禁用态：jobName -> bool
 const acting = ref({})
@@ -112,6 +115,12 @@ function openEdit(job) {
   modalOpen.value = true
 }
 
+// 点击表格行 → 只读详情（样式同编辑表单，不可编辑）
+function openView(job) {
+  viewJob.value = JSON.parse(JSON.stringify(job))
+  viewOpen.value = true
+}
+
 async function onModalSubmit(payload) {
   try {
     if (editingJob.value) {
@@ -158,7 +167,7 @@ async function onToggle(job) {
 
 async function onDelete(job) {
   try {
-    await ElMessageBox.confirm(`确定删除指令「${job.name}」？删除后不可恢复。`, '删除指令', {
+    await ElMessageBox.confirm(`确定删除任务「${job.name}」？删除后不可恢复。`, '删除任务', {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning',
@@ -189,7 +198,7 @@ watch(refreshTick, () => load())
     <!-- 搜索栏：表格上方统一工具栏 -->
     <el-card shadow="never" class="toolbar">
       <el-form inline @submit.prevent>
-        <el-form-item label="指令类型">
+        <el-form-item label="任务类型">
           <el-select v-model="typeFilter" placeholder="类型" clearable style="width:130px">
             <el-option v-for="o in typeOptions" :key="o.v" :value="o.v" :label="o.l" />
           </el-select>
@@ -203,7 +212,7 @@ watch(refreshTick, () => load())
           <el-input v-model="qFilter" placeholder="搜索..." clearable style="width:200px" />
         </el-form-item>
         <el-form-item class="toolbar-btn">
-          <el-button type="primary" @click="openCreate">+ 新增指令</el-button>
+          <el-button type="primary" @click="openCreate">+ 新增任务</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -211,33 +220,34 @@ watch(refreshTick, () => load())
     <!-- 数据表 -->
     <el-card shadow="never" class="table-card">
       <el-table :data="items" v-loading="loading" stripe
-                @sort-change="onSortChange" :empty-text="loading ? '加载中…' : '没有匹配的任务，换个搜索条件试试'">
-        <el-table-column prop="name" label="任务名" min-width="180" sortable="custom">
+                @sort-change="onSortChange" @row-click="openView"
+                :empty-text="loading ? '加载中…' : '没有匹配的任务，换个搜索条件试试'">
+        <el-table-column prop="name" label="任务名称" min-width="180" align="center">
           <template #default="{ row }"><strong class="tname">{{ row.name }}</strong></template>
         </el-table-column>
-        <el-table-column label="类型" min-width="110">
+        <el-table-column label="任务类型" min-width="110" align="center">
           <template #default="{ row }"><span class="badge NEUTRAL">{{ jobTypeLabel(row.type) }}</span></template>
         </el-table-column>
-        <el-table-column label="描述" min-width="160" show-overflow-tooltip>
+        <el-table-column label="任务描述" min-width="160" show-overflow-tooltip align="center">
           <template #default="{ row }">{{ row.description || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" min-width="150" sortable="custom">
-          <template #default="{ row }">{{ fmtTime(row.created_at) || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="启用" min-width="90">
+        <el-table-column label="启用" min-width="90" align="center">
           <template #default="{ row }">
             <span :class="['toggle', row.enabled ? 'on' : 'off']">{{ enabledLabel(row.enabled) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="最近状态" min-width="110">
+        <el-table-column label="当前状态" min-width="100" align="center">
           <template #default="{ row }">
-            <span v-if="row.last_status" :class="['badge', row.last_status]">{{ statusLabel(row.last_status) }}</span>
-            <span v-else class="muted">—</span>
+            <span v-if="row.running_count > 0" class="badge RUNNING">进行中</span>
+            <span v-else class="badge IDLE">空闲</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" fixed="right" width="290">
+        <el-table-column prop="created_at" label="创建时间" min-width="150" sortable="custom" align="center">
+          <template #default="{ row }">{{ fmtTime(row.created_at) || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" fixed="right" width="290" align="center">
           <template #default="{ row }">
-            <div class="ops">
+            <div class="ops" @click.stop>
               <!-- 启动按钮 + 确认弹窗 -->
               <el-popover :visible="confirmRun === row" placement="top" :width="240">
                 <template #reference>
@@ -268,10 +278,15 @@ watch(refreshTick, () => load())
       <PagerBar :page="page" :total="total" :page-size="pageSize" @change="p => { page = p; load() }" />
     </el-card>
 
-    <!-- 新增/编辑指令弹窗 -->
-    <JobEditModal v-if="modalOpen" :title="editingJob ? '编辑指令' : '新增指令'"
+    <!-- 新增/编辑任务弹窗 -->
+    <JobEditModal v-if="modalOpen" :title="editingJob ? '编辑任务' : '新增任务'"
                   :schemas="schemas" :initial="editingJob"
                   @close="onModalClose" @submit="onModalSubmit" />
+
+    <!-- 只读详情弹窗：点击表格行弹出，样式同编辑表单，仅查看不可编辑 -->
+    <JobEditModal v-if="viewOpen" title="任务详情" readonly
+                  :schemas="schemas" :initial="viewJob"
+                  @close="viewOpen = false" />
   </div>
 </template>
 
@@ -286,7 +301,7 @@ watch(refreshTick, () => load())
   gap: var(--space);
 }
 .toolbar :deep(.el-form-item) { margin-bottom: 0; margin-right: 0; flex: 0 0 auto; }
-/* 「+ 新增指令」顶到最右端 */
+/* 「+ 新增任务」顶到最右端 */
 .toolbar :deep(.el-form-item.toolbar-btn) { margin-left: auto; }
 
 .tname { font-weight: 600; }

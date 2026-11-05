@@ -31,7 +31,7 @@ el-container（纵向撑满）
    └─ footer     页脚
 ```
 
-底部挂两个**全局抽屉**：`JobDrawer`（指令详情）、`RunDetailDrawer`（执行详情），由 `store/drawer.js` 统一控制，任何页面调 `openJob(name)` / `openRun(id)` 都能滑出。
+底部挂两个**全局抽屉**：`JobDrawer`（任务详情）、`RunDetailDrawer`（执行详情），由 `store/drawer.js` 统一控制，任何页面调 `openJob(name)` / `openRun(id)` 都能滑出。
 
 ---
 
@@ -78,7 +78,7 @@ el-container（纵向撑满）
 
 ## 5. 组件规范
 
-### 列表页（指令列表 / 执行中心 / 执行历史）
+### 列表页（任务列表 / 执行中心 / 执行历史）
 结构：**搜索栏卡片 + 表格卡片 + 分页**。
 
 ```vue
@@ -116,7 +116,7 @@ el-container（纵向撑满）
 
 ### 详情抽屉
 - `RunDetailDrawer`：`size="80%"`（约 4/5 屏宽），`:close-on-click-modal="true"`（点空白关闭），实时轮询日志（运行中每 2.5s）。
-- `JobDrawer`：指令详情（基本信息 + 配置参数）。
+- `JobDrawer`：任务详情（基本信息 + 配置参数）。
 
 ### 表单 / 弹窗
 - 表单用 `el-form` + `el-row/el-col` 栅格化；`label-position="top"` 可避免窄弹窗内 label 挤压输入框。

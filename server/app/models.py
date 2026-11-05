@@ -13,7 +13,7 @@
     各类型 params 字段：
       COMMAND:  command(命令串,必填), workdir(工作目录), env
       SCRIPT:   path(脚本路径,必填), args, workdir, env
-      PROGRAM:  path(程序路径,必填), args, workdir, env, detach(是否启动即成功)
+      PROGRAM:  path(程序路径,必填), args, workdir, env, detach(是否进程独立/后台常驻)
       FILEOP:   action(delete_file|delete_dir|copy|move), source, target,
                 recursive(仅删除目录用)
 """
@@ -59,7 +59,7 @@ JOB_PARAM_SCHEMA: Dict[str, Dict[str, Any]] = {
             {"key": "path", "label": "程序路径", "required": True, "type": "text"},
             {"key": "args", "label": "参数", "required": False, "type": "args"},
             {"key": "workdir", "label": "工作目录", "required": False, "type": "text"},
-            {"key": "detach", "label": "启动即成功", "required": False, "type": "bool"},
+            {"key": "detach", "label": "进程独立", "required": False, "type": "bool"},
         ],
     },
     "FILEOP": {

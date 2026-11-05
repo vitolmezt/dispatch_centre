@@ -3,7 +3,7 @@ import { reactive } from 'vue'
 /**
  * 全局共享的抽屉状态。
  * 支持两类抽屉：
- *  - type: 'job' —— 选中一个任务名（指令列表 / 详情）
+ *  - type: 'job' —— 选中一个任务名（任务列表 / 详情）
  *  - type: 'run' —— 选中一条执行记录 id（执行历史详情）
  * 任何页面调用 openDrawer(type, value) 都会从右侧滑出对应抽屉。
  */

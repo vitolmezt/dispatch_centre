@@ -69,7 +69,7 @@ function open(run) { openRun(run.id) }
     <!-- 搜索栏 -->
     <el-card shadow="never" class="toolbar">
       <el-form inline @submit.prevent>
-        <el-form-item label="指令类型">
+        <el-form-item label="任务类型">
           <el-select v-model="typeFilter" placeholder="全部类型" clearable style="width:140px">
             <el-option v-for="o in typeOptions" :key="o.v" :value="o.v" :label="o.l" />
           </el-select>
@@ -84,26 +84,25 @@ function open(run) { openRun(run.id) }
     <el-card shadow="never" class="table-card">
       <el-table :data="runs" v-loading="loading" @sort-change="onSortChange"
                 :empty-text="runs.length ? '' : '当前没有正在执行的实例'">
-        <el-table-column prop="id" label="Run ID" min-width="90" />
-        <el-table-column prop="name" label="任务" min-width="180" sortable="custom">
+        <el-table-column prop="name" label="任务名称" min-width="200" align="center">
           <template #default="{ row }"><strong>{{ row.job_name }}</strong></template>
         </el-table-column>
-        <el-table-column label="类型" min-width="100">
+        <el-table-column label="任务类型" min-width="110" align="center">
           <template #default="{ row }"><span class="badge NEUTRAL">{{ jobTypeLabel(row.job_type) }}</span></template>
         </el-table-column>
-        <el-table-column label="触发" min-width="90">
+        <el-table-column label="触发" min-width="90" align="center">
           <template #default="{ row }">{{ triggerLabel(row.trigger) }}</template>
         </el-table-column>
-        <el-table-column label="PID" min-width="80">
+        <el-table-column label="PID" min-width="80" align="center">
           <template #default="{ row }"><span class="mono">{{ row.pid ?? '—' }}</span></template>
         </el-table-column>
-        <el-table-column prop="start" label="开始时间" min-width="150" sortable="custom">
+        <el-table-column prop="start" label="开始时间" min-width="150" sortable="custom" align="center">
           <template #default="{ row }">{{ (row.start || '').replace('T',' ').slice(5,19) }}</template>
         </el-table-column>
-        <el-table-column label="状态" min-width="110">
+        <el-table-column label="状态" min-width="110" align="center">
           <template #default="{ row }"><span class="badge RUNNING">进行中</span></template>
         </el-table-column>
-        <el-table-column label="操作" fixed="right" width="150">
+        <el-table-column label="操作" fixed="right" width="150" align="center">
           <template #default="{ row }">
             <div class="ops">
               <el-button size="small" @click="open(row)">详情</el-button>

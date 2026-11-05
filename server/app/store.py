@@ -151,8 +151,8 @@ class Store:
             sql += " AND job_name LIKE ?"
             params.append(f"%{name_like}%")
         # 排序字段白名单，仅允许受支持的列名，避免 SQL 注入
-        col = {"start": "started_at", "name": "job_name"}.get(
-            sort if sort in ("start", "name") else "start", "started_at")
+        col = {"start": "started_at", "name": "job_name", "end": "ended_at"}.get(
+            sort if sort in ("start", "name", "end") else "start", "started_at")
         direction = "ASC" if str(order).lower() == "asc" else "DESC"
         order_sql = f" ORDER BY {col} {direction}"
         if limit is not None and offset is not None:

@@ -46,11 +46,11 @@ app = FastAPI(
         "调度中心接口一览。\n\n"
         "| 接口 | 方法 | 说明 |\n"
         "|---|---|---|\n"
-        "| `/api/jobs` | GET | 指令列表（分页/类型/启用/名称搜索） |\n"
-        "| `/api/jobs` | POST | 新增一条指令 |\n"
-        "| `/api/jobs/{name}` | PUT | 更新一条指令 |\n"
-        "| `/api/jobs/{name}` | DELETE | 删除一条指令 |\n"
-        "| `/api/jobs/{name}/enable` | POST | 启用/停用一条指令 |\n"
+        "| `/api/jobs` | GET | 任务列表（分页/类型/启用/名称搜索） |\n"
+        "| `/api/jobs` | POST | 新增一条任务 |\n"
+        "| `/api/jobs/{name}` | PUT | 更新一条任务 |\n"
+        "| `/api/jobs/{name}` | DELETE | 删除一条任务 |\n"
+        "| `/api/jobs/{name}/enable` | POST | 启用/停用一条任务 |\n"
         "| `/api/job-schema` | GET | 各任务类型的参数表单结构（前端动态表单） |\n"
         "| `/api/groups` | GET | 任务分组元信息 |\n"
         "| `/api/running` | GET | 运行中的实例 |\n"
@@ -123,14 +123,14 @@ def list_jobs(type: Optional[str] = Query(None, alias="type"),
     return {"total": result["total"], "page": page, "page_size": page_size, "items": result["items"]}
 
 
-# ---------- 指令 CRUD（不再依赖 jobs.json，jobs 存于数据库 jobs 表） ----------
+# ---------- 任务 CRUD（不再依赖 jobs.json，jobs 存于数据库 jobs 表） ----------
 def _job_err(detail: str) -> HTTPException:
     return HTTPException(status_code=400, detail=detail)
 
 
 @app.post("/api/jobs")
 def create_job(payload: dict = Body(...)):
-    """新增一条指令。payload 结构同旧 jobs.json 条目：{name,type,params,schedule,timeout_s,enabled,description}."""
+    """新增一条任务。payload 结构同旧 jobs.json 条目：{name,type,params,schedule,timeout_s,enabled,description}."""
     s = get_scheduler()
     job = Job.from_dict(payload)
     errs = job.validate()
@@ -144,7 +144,7 @@ def create_job(payload: dict = Body(...)):
 
 @app.put("/api/jobs/{name}")
 def update_job(name: str, payload: dict = Body(...)):
-    """更新一条指令（按完整覆盖：name 不可改名，其余字段整体替换）."""
+    """更新一条任务（按完整覆盖：name 不可改名，其余字段整体替换）."""
     s = get_scheduler()
     old = s.jobs.get(name)
     if old is None:
@@ -170,7 +170,7 @@ def delete_job(name: str):
 
 @app.post("/api/jobs/{name}/enable")
 def toggle_job(name: str, payload: dict = Body(...)):
-    """启用/停用一条指令。payload: {enabled: bool}."""
+    """启用/停用一条任务。payload: {enabled: bool}."""
     s = get_scheduler()
     job = s.jobs.get(name)
     if job is None:
@@ -179,7 +179,7 @@ def toggle_job(name: str, payload: dict = Body(...)):
     try:
         s.set_job_enabled(name, enabled)
     except ValueError as e:
-        # 正在执行的指令不允许停用
+        # 正在执行的任务不允许停用
         raise HTTPException(status_code=409, detail=str(e))
     return {"ok": True, "name": name, "enabled": enabled}
 
@@ -253,11 +253,11 @@ def trigger_job(name: str):
     """
     result = get_scheduler().trigger(name)
     if result is None:
-        raise HTTPException(status_code=404, detail="指令不存在")
+        raise HTTPException(status_code=404, detail="任务不存在")
     if result == "blocked":
-        raise HTTPException(status_code=409, detail="该指令正在执行中，请等待其结束后再触发")
+        raise HTTPException(status_code=409, detail="该任务正在执行中，请等待其结束后再触发")
     if result == "disabled":
-        raise HTTPException(status_code=403, detail="该指令已停用，无法触发")
+        raise HTTPException(status_code=403, detail="该任务已停用，无法触发")
     return {"ok": True, "run_id": result.id, "trigger": result.trigger}
 
 

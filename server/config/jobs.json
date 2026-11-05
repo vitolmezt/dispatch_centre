@@ -69,7 +69,7 @@
     {
       "key": "applications",
       "name": "应用软件",
-      "remark": "点击启动常用软件（PROGRAM + detach 启动即成功）",
+      "remark": "点击启动常用软件（PROGRAM + detach 进程独立），程序存活期间保持进行中，退出即完成",
       "task_type": "PROGRAM",
       "items": [
         {
@@ -83,7 +83,7 @@
           "schedule": null,
           "timeout_s": 0,
           "enabled": true,
-          "description": "点击启动记事本（detach：启动即成功）"
+          "description": "点击启动记事本（detach：进程独立，关闭记事本后任务记为完成）"
         }
       ]
     },

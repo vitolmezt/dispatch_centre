@@ -10,7 +10,7 @@ import { fetchHistory } from '../api'
  *  3. 配置信息（schedule / timeout / enabled）
  *  4. 执行经历（该任务最近几次历史）
  * 纵向从上到下表格布局，仿管理系统风格。
- * 触发按钮在「指令列表」表格内已有，这里不再放执行按钮。
+ * 触发按钮在「任务列表」表格内已有，这里不再放执行按钮。
  */
 
 const props = defineProps({

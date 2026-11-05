@@ -30,13 +30,13 @@ onBeforeUnmount(() => disconnectRealtime())
 
 const route = useRoute()
 const pageTitle = {
-  '/jobs': '指令列表',
+  '/jobs': '任务列表',
   '/running': '执行中心',
   '/history': '执行历史',
 }
 
 const menus = [
-  { to: '/jobs', label: '指令列表' },
+  { to: '/jobs', label: '任务列表' },
   { to: '/running', label: '执行中心' },
   { to: '/history', label: '执行历史' },
 ]

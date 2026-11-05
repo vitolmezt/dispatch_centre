@@ -62,7 +62,7 @@ function open(run) { openRun(run.id) }
     <!-- 搜索栏 -->
     <el-card shadow="never" class="toolbar">
       <el-form inline @submit.prevent>
-        <el-form-item label="指令类型">
+        <el-form-item label="任务类型">
           <el-select v-model="typeFilter" placeholder="全部" clearable style="width:130px">
             <el-option v-for="o in typeOptions" :key="o.v" :value="o.v" :label="o.l" />
           </el-select>
@@ -72,7 +72,7 @@ function open(run) { openRun(run.id) }
             <el-option v-for="o in statusOptions" :key="o.v" :value="o.v" :label="o.l" />
           </el-select>
         </el-form-item>
-        <el-form-item label="指令名称">
+        <el-form-item label="任务名称">
           <el-input v-model="qFilter" placeholder="搜索…" clearable style="width:190px" />
         </el-form-item>
       </el-form>
@@ -81,19 +81,18 @@ function open(run) { openRun(run.id) }
     <!-- 数据表 -->
     <el-card shadow="never" class="table-card">
       <el-table :data="runs" v-loading="loading" @sort-change="onSortChange"
-                :empty-text="loading ? '加载中…' : '暂无记录，去「指令列表」页触发一个任务试试'"
+                :empty-text="loading ? '加载中…' : '暂无记录，去「任务列表」页触发一个任务试试'"
                 highlight-current-row @row-click="open" class="clickable">
-        <el-table-column prop="id" label="Run ID" min-width="90" />
-        <el-table-column prop="name" label="任务" min-width="150" sortable="custom">
+        <el-table-column prop="name" label="任务名称" min-width="150" sortable="custom" align="center">
           <template #default="{ row }"><strong>{{ row.job_name }}</strong></template>
         </el-table-column>
-        <el-table-column label="类型" min-width="90">
+        <el-table-column label="任务类型" min-width="90" align="center">
           <template #default="{ row }"><span class="badge NEUTRAL">{{ jobTypeLabel(row.job_type) }}</span></template>
         </el-table-column>
-        <el-table-column label="触发" min-width="80">
+        <el-table-column label="触发" min-width="80" align="center">
           <template #default="{ row }">{{ triggerLabel(row.trigger) }}</template>
         </el-table-column>
-        <el-table-column label="状态" min-width="100">
+        <el-table-column label="状态" min-width="100" align="center">
           <template #default="{ row }">
             <span :class="['badge', row.status]"
                   :title="statusLabel(row.status) + (row.error ? ' · ' + row.error : '')">
@@ -101,22 +100,22 @@ function open(run) { openRun(run.id) }
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="start" label="执行开始时间" min-width="140" sortable="custom">
+        <el-table-column prop="start" label="执行开始时间" min-width="140" sortable="custom" align="center">
           <template #default="{ row }">{{ fmtT(row.start) }}</template>
         </el-table-column>
-        <el-table-column label="执行结束时间" min-width="140">
+        <el-table-column prop="end" label="执行结束时间" min-width="140" sortable="custom" align="center">
           <template #default="{ row }">{{ fmtT(row.end) || '—' }}</template>
         </el-table-column>
-        <el-table-column label="耗时" min-width="80">
+        <el-table-column label="耗时" min-width="80" align="center">
           <template #default="{ row }">{{ row.duration_ms != null ? (row.duration_ms/1000).toFixed(2)+'s' : '—' }}</template>
         </el-table-column>
-        <el-table-column label="退出码" min-width="70">
+        <el-table-column label="退出码" min-width="70" align="center">
           <template #default="{ row }">
             <span v-if="row.status === 'FAILED' || row.status === 'KILLED' || row.status === 'TIMEDOUT'">—</span>
             <span v-else>{{ row.exit_code ?? '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" fixed="right" width="90">
+        <el-table-column label="操作" fixed="right" width="90" align="center">
           <template #default="{ row }">
             <el-button size="small" @click.stop="open(row)">详情</el-button>
           </template>
