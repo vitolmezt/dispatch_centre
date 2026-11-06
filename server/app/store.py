@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .models import Job, Run
+from .models import Job, Run, ServiceGroup
 
 
 class Store:
@@ -60,6 +60,13 @@ class Store:
                 c.execute("ALTER TABLE runs ADD COLUMN job_type TEXT")
             c.execute("CREATE INDEX IF NOT EXISTS idx_runs_job ON runs(job_name)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)")
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS service_groups (
+                    name TEXT PRIMARY KEY,
+                    group_json TEXT NOT NULL,
+                    created_at TEXT
+                )
+            """)
             self._conn.commit()
 
     # ---- jobs ----
@@ -116,6 +123,47 @@ class Store:
         if row is None:
             return None
         return Job.from_dict(json.loads(row["job_json"]))
+
+    # ---- service_groups ----
+    def upsert_service_group(self, group: "ServiceGroup"):
+        with self._lock:
+            now = datetime.now(timezone.utc).isoformat()
+            if not group.created_at:
+                row = self._conn.execute(
+                    "SELECT created_at FROM service_groups WHERE name=?",
+                    (group.name,),
+                ).fetchone()
+                group.created_at = (row["created_at"] if row and row["created_at"] else now)
+            else:
+                group.created_at = group.created_at or now
+            self._conn.execute(
+                "INSERT INTO service_groups (name, group_json, created_at) "
+                "VALUES (?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET "
+                "group_json=excluded.group_json, created_at=excluded.created_at",
+                (group.name, json.dumps(group.to_dict()), group.created_at),
+            )
+            self._conn.commit()
+
+    def load_service_groups(self) -> Dict[str, "ServiceGroup"]:
+        with self._lock:
+            rows = self._conn.execute("SELECT group_json FROM service_groups").fetchall()
+        return {g.name: g for g in
+                [ServiceGroup.from_dict(json.loads(r["group_json"])) for r in rows]}
+
+    def get_service_group(self, name: str) -> Optional["ServiceGroup"]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT group_json FROM service_groups WHERE name=?", (name,)
+            ).fetchone()
+        if row is None:
+            return None
+        return ServiceGroup.from_dict(json.loads(row["group_json"]))
+
+    def delete_service_group(self, name: str):
+        with self._lock:
+            self._conn.execute("DELETE FROM service_groups WHERE name=?", (name,))
+            self._conn.commit()
 
     # ---- runs ----
     def save_run(self, run: Run):

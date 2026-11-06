@@ -130,6 +130,41 @@ export async function stopRun(runId) {
   return data
 }
 
+export async function fetchServiceGroups() {
+  const { data } = await http.get('/service-groups')
+  return data
+}
+
+export async function createServiceGroup(payload) {
+  const { data } = await http.post('/service-groups', payload)
+  return data
+}
+
+export async function updateServiceGroup(name, payload) {
+  const { data } = await http.put(`/service-groups/${encodeURIComponent(name)}`, payload)
+  return data
+}
+
+export async function deleteServiceGroup(name) {
+  const { data } = await http.delete(`/service-groups/${encodeURIComponent(name)}`)
+  return data
+}
+
+export async function startServiceGroup(name) {
+  const { data } = await http.post(`/service-groups/${encodeURIComponent(name)}/start`)
+  return data
+}
+
+export async function stopServiceGroup(name) {
+  const { data } = await http.post(`/service-groups/${encodeURIComponent(name)}/stop`)
+  return data
+}
+
+export async function fetchServiceGroup(name) {
+  const { data } = await http.get(`/service-groups/${encodeURIComponent(name)}`)
+  return data
+}
+
 export async function pickPath(kind, options = {}) {
   const { data } = await http.post('/fs/pick', { kind, ...options })
   return data

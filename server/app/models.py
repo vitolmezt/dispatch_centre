@@ -168,6 +168,54 @@ class Job:
 
 
 @dataclass
+class ServiceGroup:
+    """一个「服务组」：把若干常驻(detach)任务编排为一键启动/停止的服务组.
+
+    members 里的每一项引用一个【已存在的 Job】名（通常 detach=True 常驻），
+    不重复定义子任务，仅描述"这一组要一起拉起哪些服务、以何顺序启动"。
+    order 越小越先启动；start_group 按 order 升序逐个触发成员 Job。
+    """
+
+    name: str
+    members: List[Dict[str, Any]] = field(default_factory=list)  # [{job_name, label, order}]
+    description: str = ""
+    created_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ServiceGroup":
+        return cls(
+            name=str(d.get("name") or ""),
+            members=[dict(m) for m in (d.get("members") or [])],
+            description=str(d.get("description") or ""),
+            created_at=d.get("created_at"),
+        )
+
+    def validate(self) -> List[str]:
+        errors: List[str] = []
+        if not self.name:
+            errors.append("name 不能为空")
+        seen = set()
+        for m in self.members:
+            if not str(m.get("job_name") or ""):
+                errors.append("存在空的任务名成员")
+            jn = str(m.get("job_name") or "")
+            if jn in seen:
+                errors.append(f"存在重复的成员任务: {jn}")
+            seen.add(jn)
+        if not any(m.get("job_name") for m in self.members):
+            errors.append("服务组至少需要一个成员任务")
+        return errors
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "members": [dict(m) for m in self.members],
+            "description": self.description,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass
 class Run:
     """一次性执行实例."""
 

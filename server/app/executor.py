@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import locale
 import os
 import shutil
 import subprocess
@@ -18,6 +19,21 @@ from typing import Dict, List, Optional
 
 from .models import Job, Run
 
+# 子进程文本解码编码：跟随系统区域语言（Windows 中文系统为 GBK/cp936）。
+# 不硬编码单一编码：行解码时先试 UTF-8 严格，失败回退该系统编码（自动识别两种常见输出）。
+_IO_ENCODING = locale.getpreferredencoding(False) or "utf-8"
+
+
+def _decode_line(raw: bytes) -> str:
+    """把子进程输出的一行字节解码为 str，自动识别 UTF-8 / 系统编码."""
+    no_lf = raw.rstrip(b"\n")
+    if not no_lf:
+        return ""
+    try:
+        return no_lf.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return no_lf.decode(_IO_ENCODING, errors="replace")
+
 
 class Executor:
     """负责把 Job 变成真实的 OS 子进程 / 文件操作流程."""
@@ -25,7 +41,16 @@ class Executor:
     def __init__(self, runner):
         self.runner = runner  # 回引用 Scheduler，用于上报状态
         self._procs: Dict[str, subprocess.Popen] = {}  # run_id -> Popen
+        # run_id 集合：已被用户主动停止/中止的实例。
+        # 读输出的后台线程据此不再用退出码覆盖状态，避免把"主动停止"误标为 FAILED。
+        self._user_stopped: set = set()
         self._lock = threading.Lock()
+
+    # ---- 主动停止标记（供 scheduler.stop / self.abort 调用） ----
+    def mark_user_stopped(self, run_id: str):
+        """记录该 run 是"用户主动停止/中止"，之后的读线程不得用退出码覆盖其状态."""
+        with self._lock:
+            self._user_stopped.add(run_id)
 
     # ---- params 便捷访问 ----
     @staticmethod
@@ -155,10 +180,7 @@ class Executor:
                 stdin=subprocess.DEVNULL,
                 cwd=cwd_env,
                 env=env,
-                text=True,
-                # UTF-8 读取子进程输出，非法字节替换为占位符
-                encoding="utf-8",
-                errors="replace",
+                # 不启用 text：以原始字节读取，行进解码时自动识别 UTF-8/GBK，根治中文乱码
                 bufsize=1,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 if Executor._is_windows()
@@ -181,13 +203,15 @@ class Executor:
             # 阻塞读输出（常驻进程也照样抓日志，供执行中心实时查看）
             if proc.stdout:
                 for raw in proc.stdout:
-                    line = raw.rstrip("\n")
+                    line = _decode_line(raw)
                     if line:
                         self.runner.on_log(run, line)
             proc.wait()
             run.exit_code = proc.returncode
-            # 中止/超时（KILLED/TIMEDOUT）状态下不再按退出码覆盖状态
-            if run.status not in ("KILLED", "TIMEDOUT"):
+            # 中止/超时（KILLED/TIMEDOUT）/ 用户主动停止，都不再按退出码覆盖状态
+            # （否则 taskkill 强杀的退出码 1 会把"主动停止"误标为 FAILED）
+            was_user_stopped = run.id in self._user_stopped
+            if run.status not in ("KILLED", "TIMEDOUT") and not was_user_stopped:
                 run.status = "SUCCEEDED" if proc.returncode == 0 else "FAILED"
                 if proc.returncode != 0:
                     run.error = f"退出码 {proc.returncode}"
@@ -202,8 +226,15 @@ class Executor:
                 timer.cancel()
             with self._lock:
                 self._procs.pop(run.id, None)
+                self._user_stopped.discard(run.id)
             run.end = _now_local()
-            self.runner.on_finished(run)
+            if was_user_stopped:
+                # 用户主动停止：状态收尾（置 KILLED、落库、广播 finished）统一交给
+                # scheduler.stop 的 _finalize_user_stop 完成，这里只收尾日志流，
+                # 避免读线程抢先广播 RUNNING 的 finished。
+                self.runner.on_user_stopped(run)
+            else:
+                self.runner.on_finished(run)
 
     def abort(self, run: Run) -> bool:
         """中止一个运行中的实例。返回是否成功发出中止请求."""
@@ -211,6 +242,7 @@ class Executor:
             proc = self._procs.get(run.id)
         if proc is None:
             return False
+        self._user_stopped.add(run.id)  # 防止读线程用退出码把它覆盖成 FAILED
         self._kill_proc(proc)
         run.status = "KILLED"
         run.error = "用户中止"
@@ -266,10 +298,11 @@ class Executor:
                     ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                     capture_output=True,
                     text=True,
-                    encoding="utf-8",
+                    encoding=_IO_ENCODING,
                     errors="replace",
                     timeout=10,
                 )
+                # tasklist 输出含中文表头，按 PID 纯数字匹配不受编码影响
                 return str(pid) in out.stdout
             else:
                 os.kill(pid, 0)

@@ -22,7 +22,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .executor import Executor
-from .models import Job, Run, job_to_api
+from .models import Job, Run, job_to_api, ServiceGroup
 from .store import Store
 
 logger = logging.getLogger("scheduler")
@@ -51,6 +51,7 @@ class Scheduler:
         self.executor = Executor(self)
         self.jobs: Dict[str, Job] = {}
         self.groups: Dict[str, dict] = {}  # group_key -> {key,name,remark,task_type}
+        self.service_groups: Dict[str, ServiceGroup] = {}  # 服务组名 -> ServiceGroup
         self.running: Dict[str, Run] = {}  # run_id -> Run（进行中）
         self._lock = threading.RLock()
         # 已广播过 finished 的 run_id 集合：保证中止/结束只推送一次 finished 事件
@@ -141,6 +142,15 @@ class Scheduler:
         self.store.save_run(run)
         logger.info(f"Job[{run.job_name}] run[{run.id}] -> {run.status}")
         self.publish_finished(run)
+        self._publish_log_end(run.id)
+
+    def on_user_stopped(self, run: Run):
+        """用户主动停止时，executor 读线程的专用收尾回调.
+
+        stop/abort 已通过 _finalize_user_stop 完成状态落库、running 移除与 finished 广播（KILLED），
+        因此这里只收尾日志流。注意：不能在这里 pop running，否则会抢在 _finalize_user_stop
+        之前移除，导致 stop 的 in_running 判断失败而跳过 KILLED 落库。
+        """
         self._publish_log_end(run.id)
 
     def _publish_log_end(self, run_id: str):
@@ -294,6 +304,7 @@ class Scheduler:
             errs = self.load_config()  # 仅首次迁移用：读取 jobs.json -> upsert 到 DB
             for e in errs:
                 logger.error(f"配置错误: {e}")
+        self.service_groups = self.store.load_service_groups()
         self._register_all()
         self.aps.start()
 
@@ -385,6 +396,9 @@ class Scheduler:
         pid = getattr(run, "pid", None)
         if not pid:
             return {"ok": True, "stop": False, "reason": "no_pid"}
+        # 先登记"用户主动停止"，必须在 kill 之前：kill 后读线程会立刻把退出码 1
+        # 覆盖成 FAILED 并从 running 移除，若此时才标记就拦不住。
+        self.executor.mark_user_stopped(run.id)
         ok = self.executor.kill_by_pid(pid)
         # 只要进程已停（本次杀死 / 之前已不存在），都视为停止成功，并把仍在运行的 run 标记为 KILLED
         if not ok:
@@ -409,6 +423,7 @@ class Scheduler:
             self.running.pop(run.id, None)
         self.store.save_run(cur)
         self.publish_finished(cur)
+        self._publish_log_end(run.id)
 
     # ---------- 任务 CRUD（持久化到数据库 jobs 表，替代 jobs.json 热改） ----------
     def add_job(self, job: Job):
@@ -526,6 +541,120 @@ class Scheduler:
             count = sum(1 for j in self.jobs.values() if j.group == key)
             out.append({"key": key, **g, "count": count})
         return out
+
+    # ---------- 服务组编排（基于现有 detach 任务） ----------
+    def service_groups_view(self) -> List[dict]:
+        """服务组列表，含每个成员的实时运行状态（当前 run、状态、PID）."""
+        with self._lock:
+            groups = list(self.service_groups.values())
+        return [self._service_group_view(g) for g in groups]
+
+    def _service_group_view(self, group: ServiceGroup) -> dict:
+        """单个服务组的 API 视图：基本信息 + 每成员当前（若有）运行实例状态."""
+        with self._lock:
+            members = []
+            for m in sorted(group.members, key=lambda x: int(x.get("order", 0))):
+                jn = str(m.get("job_name") or "")
+                job = self.jobs.get(jn)
+                run = next((r for r in self.running.values()
+                            if r.job_name == jn and r.status == "RUNNING"), None)
+                members.append({
+                    "job_name": jn,
+                    "label": m.get("label") or jn,
+                    "order": int(m.get("order", 0)),
+                    "exists": job is not None,
+                    "run_id": run.id if run else None,
+                    "status": run.status if run else "STOPPED",
+                    "pid": run.pid if run else None,
+                    "start": run.start if run else None,
+                    "last": self._group_member_last(jn),
+                })
+        return {
+            "name": group.name,
+            "description": group.description,
+            "created_at": group.created_at,
+            "members": members,
+            # 组整体运行状态：任一成员在运行即视为 running
+            "running": any(m["status"] == "RUNNING" for m in members),
+        }
+
+    def _group_member_last(self, job_name: str) -> Optional[dict]:
+        last = self.store.get_runs(limit=1, job_name=job_name)
+        return (last[0].to_dict(include_log=False).get("status") if last else None)
+
+    def add_service_group(self, group: ServiceGroup):
+        with self._lock:
+            self.service_groups[group.name] = group
+            self.store.upsert_service_group(group)
+        logger.info(f"service_group created: {group.name} ({len(group.members)} members)")
+
+    def update_service_group(self, group: ServiceGroup):
+        with self._lock:
+            self.service_groups[group.name] = group
+            self.store.upsert_service_group(group)
+        logger.info(f"service_group updated: {group.name}")
+
+    def delete_service_group(self, name: str):
+        with self._lock:
+            self.service_groups.pop(name, None)
+            self.store.delete_service_group(name)
+        logger.info(f"service_group deleted: {name}")
+
+    def start_service_group(self, name: str) -> dict:
+        """一键启动服务组：按成员 order 升序，逐个触发其底层 Job（常驻 detach）.
+
+        各成员 Job 互不相同，天然不触碰单任务并发上限。返回启动的成员 run 映射。
+        """
+        with self._lock:
+            group = self.service_groups.get(name)
+        if group is None:
+            return {"ok": False, "reason": "not_found"}
+        started = []
+        errors = []
+        for m in sorted(group.members, key=lambda x: int(x.get("order", 0))):
+            jn = str(m.get("job_name") or "")
+            with self._lock:
+                job = self.jobs.get(jn)
+                if job is None:
+                    errors.append(f"{jn}: 任务不存在")
+                    continue
+                if any(r.job_name == jn and r.status == "RUNNING"
+                       for r in self.running.values()):
+                    # 已运行：视为已启动，跳过重复拉起（幂等）
+                    run = next(r for r in self.running.values()
+                               if r.job_name == jn and r.status == "RUNNING")
+                    started.append({"job_name": jn, "run_id": run.id, "status": "already_running"})
+                    continue
+            run = self._trigger_job(jn, "api")
+            started.append({"job_name": jn, "run_id": run.id if run else None,
+                            "status": "started" if run else "failed"})
+            if run is None:
+                errors.append(f"{jn}: 启动失败")
+        return {"ok": not errors, "name": name, "started": started, "errors": errors}
+
+    def stop_service_group(self, name: str) -> dict:
+        """一键停止服务组：遍历组内正在运行的成员 run，逐个按持久化 PID 整树 kill."""
+        with self._lock:
+            group = self.service_groups.get(name)
+        if group is None:
+            return {"ok": False, "reason": "not_found"}
+        stopped = []
+        errors = []
+        for m in group.members:
+            jn = str(m.get("job_name") or "")
+            with self._lock:
+                run = next((r for r in self.running.values()
+                            if r.job_name == jn and r.status == "RUNNING"), None)
+            if run is None:
+                continue  # 未运行的不需要停
+            res = self.stop(run.id)
+            if res.get("ok"):
+                stopped.append({"job_name": jn, "run_id": run.id,
+                                "stopped": res.get("stop"),
+                                "reason": res.get("reason")})
+            else:
+                errors.append(f"{jn}: 停止失败 ({res.get('reason')})")
+        return {"ok": not errors, "name": name, "stopped": stopped, "errors": errors}
 
     def get_running(self, run_id: str):
         """返回内存中某运行实例（实时日志），不存在返回 None."""

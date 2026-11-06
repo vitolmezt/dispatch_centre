@@ -34,6 +34,7 @@ const pageTitle = {
   '/jobs': '任务列表',
   '/running': '执行中心',
   '/history': '执行历史',
+  '/service-groups': '服务组',
 }
 
 const menus = [
@@ -41,6 +42,7 @@ const menus = [
   { to: '/jobs', label: '任务列表' },
   { to: '/running', label: '执行中心' },
   { to: '/history', label: '执行历史' },
+  { to: '/service-groups', label: '服务组' },
 ]
 </script>
 

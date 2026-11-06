@@ -275,16 +275,16 @@ watch(refreshTick, () => load())
         <el-table-column prop="created_at" label="创建时间" min-width="140" sortable="custom">
           <template #default="{ row }"><span class="mono">{{ fmtTime(row.created_at) || '—' }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" fixed="right" width="170" align="center">
+        <el-table-column label="操作" fixed="right" width="240" align="center">
           <template #default="{ row }">
             <div class="ops" @click.stop>
-              <!-- 主操作：启动（含确认气泡） -->
+              <!-- 主操作：启动（执行一次，含确认气泡） -->
               <el-popover :visible="confirmRun === row" placement="top" :width="240">
                 <template #reference>
                   <el-button size="small"
                              :disabled="!row.enabled || (row.enabled && row.running_count > 0) || acting[row.name]"
                              :title="(row.enabled && row.running_count > 0) ? '该任务正在执行中' : (!row.enabled ? '任务已停用' : '')"
-                             class="run-btn" @click="confirmRun = row">▶ 启动</el-button>
+                             class="run-btn" @click="confirmRun = row">▶ 执行</el-button>
                 </template>
                 <div class="pop-inner">
                   <div class="pop-msg">是否执行「{{ row.name }}」？</div>
@@ -297,16 +297,19 @@ watch(refreshTick, () => load())
                 </div>
               </el-popover>
 
+              <!-- 启用/停用：互斥行内主按钮（已启用→停用，已停用→启用） -->
+              <el-button v-if="row.enabled" size="small" type="danger" plain :loading="acting[row.name]===row.name"
+                         :disabled="row.running_count > 0" :title="row.running_count > 0 ? '任务正在执行中，不能停用' : ''"
+                         @click="onToggle(row)">停用</el-button>
+              <el-button v-else size="small" type="primary"
+                         :loading="acting[row.name]===row.name" @click="onToggle(row)">启用</el-button>
+
               <!-- 更多操作下拉 -->
               <el-dropdown trigger="click" @command="c => onCommand(c, row)" @click.stop>
-                <el-button size="small" :loading="Boolean(acting[row.name])">更多操作</el-button>
+                <el-button size="small" text><span class="more-dots">⋯</span></el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item command="edit" :disabled="acting[row.name]">编辑</el-dropdown-item>
-                    <el-dropdown-item command="toggle" :disabled="acting[row.name]"
-                                      :class="{ 'is-warn': row.enabled }">
-                      {{ row.enabled ? '停用' : '启用' }}
-                    </el-dropdown-item>
                     <el-dropdown-item command="detail" :disabled="acting[row.name]">详情</el-dropdown-item>
                     <el-dropdown-item divided command="delete" :disabled="acting[row.name]"
                                       class="danger-item">删除</el-dropdown-item>
@@ -409,7 +412,9 @@ watch(refreshTick, () => load())
 .toggle.off { background: #2c2417; color: var(--warn); }
 
 /* ---- 操作列 ---- */
-.ops { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: nowrap; }
+.ops { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; white-space: nowrap; width: 100%; }
+.ops :deep(.el-button) { margin: 0; }
+.more-dots { font-size: 16px; line-height: 1; letter-spacing: 1px; padding: 0 2px; }
 .run-btn { font-weight: 600; }
 .pop-inner { text-align: center; }
 .pop-msg { margin-bottom: 10px; font-size: 13px; word-break: break-word; }

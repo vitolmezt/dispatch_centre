@@ -26,7 +26,7 @@ from fastapi.responses import StreamingResponse
 
 from . import constants
 from .scheduler import Scheduler
-from .models import Job, JOB_PARAM_SCHEMA
+from .models import Job, JOB_PARAM_SCHEMA, ServiceGroup
 
 
 def s_job_param_schema():
@@ -195,6 +195,82 @@ def job_schema():
 def list_groups():
     """任务分组元信息（crawler 风格），供前端按分组分区展示."""
     return get_scheduler().groups_view()
+
+
+# ---------- 服务组（一键启动/停止一组常驻服务） ----------
+@app.get("/api/service-groups")
+def list_service_groups():
+    """服务组列表（含每成员实时运行状态）."""
+    return get_scheduler().service_groups_view()
+
+
+@app.post("/api/service-groups")
+def create_service_group(payload: dict = Body(...)):
+    """新增一个服务组. payload: {name, members:[{job_name,label,order}], description}."""
+    s = get_scheduler()
+    group = ServiceGroup.from_dict(payload)
+    errs = group.validate()
+    if errs:
+        raise _job_err("；".join(errs))
+    if group.name in s.service_groups:
+        raise HTTPException(status_code=409, detail=f"服务组已存在: {group.name}")
+    s.add_service_group(group)
+    return {"ok": True, "name": group.name}
+
+
+@app.put("/api/service-groups/{name}")
+def update_service_group(name: str, payload: dict = Body(...)):
+    """整体更新一个服务组（name 为主键不可改名）."""
+    s = get_scheduler()
+    if name not in s.service_groups:
+        raise HTTPException(status_code=404, detail=f"服务组不存在: {name}")
+    data = dict(payload)
+    data["name"] = name
+    group = ServiceGroup.from_dict(data)
+    errs = group.validate()
+    if errs:
+        raise _job_err("；".join(errs))
+    s.update_service_group(group)
+    return {"ok": True, "name": name}
+
+
+@app.delete("/api/service-groups/{name}")
+def delete_service_group(name: str):
+    s = get_scheduler()
+    if name not in s.service_groups:
+        raise HTTPException(status_code=404, detail=f"服务组不存在: {name}")
+    s.delete_service_group(name)
+    return {"ok": True, "name": name}
+
+
+@app.post("/api/service-groups/{name}/start")
+def start_service_group(name: str):
+    """一键启动服务组内所有成员（常驻 detach），按 order 顺序拉起."""
+    res = get_scheduler().start_service_group(name)
+    if not res.get("ok"):
+        raise HTTPException(status_code=404 if res.get("reason") == "not_found" else 400,
+                            detail=res.get("errors") and "；".join(res["errors"]) or "启动失败")
+    return res
+
+
+@app.post("/api/service-groups/{name}/stop")
+def stop_service_group(name: str):
+    """一键停止服务组内所有正在运行的成员（按 PID 整树 kill）."""
+    res = get_scheduler().stop_service_group(name)
+    if not res.get("ok"):
+        raise HTTPException(status_code=404 if res.get("reason") == "not_found" else 400,
+                            detail=res.get("errors") and "；".join(res["errors"]) or "停止失败")
+    return res
+
+
+@app.get("/api/service-groups/{name}")
+def service_group_detail(name: str):
+    """单个服务组详情（含每成员当前运行状态）."""
+    s = get_scheduler()
+    group = s.service_groups.get(name)
+    if group is None:
+        raise HTTPException(status_code=404, detail=f"服务组不存在: {name}")
+    return s._service_group_view(group)
 
 
 # ---------- 运行中 ----------
