@@ -29,3 +29,6 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+# temp/scratch test dirs
+server/tmp_servicetest/
+server/tmp_*/

@@ -78,7 +78,7 @@ el-container（纵向撑满）
 
 ## 5. 组件规范
 
-### 列表页（任务列表 / 执行中心 / 执行历史）
+### 列表页（任务列表 / 执行中心 / 执行历史 / 服务组）
 结构：**搜索栏卡片 + 表格卡片 + 分页**。
 
 ```vue
@@ -105,6 +105,7 @@ el-container（纵向撑满）
 - 表单项与右侧主按钮同处一行：表单整行 `flex; flex-wrap:nowrap`，按钮 item `margin-left:auto` 顶到最右；屏幕不足时工具栏横向滚动（`.toolbar{overflow-x:auto}`）而非换行错位。
 - 排序为后端排序：列加 `sortable="custom"`，`@sort-change` 把 `prop/order` 传给后端 `sort/order` 参数。
 - 操作列 `fixed="right"`，按钮组 `el-button size="small"`。
+- **操作列统一模式**：主操作互斥显示（同一按钮按行状态二选一，如「启用/停用」、「启动/停止」只出现一个）+ 高频次要操作描边按钮 + 「⋯」下拉收纳低频操作（编辑/删除）。`.ops` 用 `display:flex; justify-content:flex-end; align-items:center; gap:8px; flex-wrap:nowrap; width:100%`，保证右对齐、8px 间距、绝不换行；列给足 `width`（约 200+）。删除/停用务必走 `ElMessageBox.confirm` 二次确认。
 
 ### 搜索栏工具条（右对齐按钮）
 ```css
@@ -117,6 +118,7 @@ el-container（纵向撑满）
 ### 详情抽屉
 - `RunDetailDrawer`：`size="80%"`（约 4/5 屏宽），`:close-on-click-modal="true"`（点空白关闭），实时轮询日志（运行中每 2.5s）。
 - `JobDrawer`：任务详情（基本信息 + 配置参数）。
+- `RunLogPanel`：通用实时日志面板（单次执行实时输出），服务组「日志」视图即在抽屉内并排挂多份 `RunLogPanel`，实现"一组服务一起看日志"。
 
 ### 表单 / 弹窗
 - 表单用 `el-form` + `el-row/el-col` 栅格化；`label-position="top"` 可避免窄弹窗内 label 挤压输入框。
