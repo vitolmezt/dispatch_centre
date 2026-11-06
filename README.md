@@ -33,6 +33,18 @@
 
 同一任务同一时刻至多一个实例在运行；重复触发会被后端拒绝（409）并在前端提示，避免误点重复执行。
 
+### 服务组管理（把后台任务组成「一台服务」）
+
+把若干「进程独立（`detach`）」的任务按顺序编排为**服务组**，视为一个整体启停：
+
+- 新建 / 编辑服务组：命名、写描述、从后台任务中**勾选成员**并排序（成员可重复/可重命名前台显示标签）。
+- **一键启动 / 停止整组**：启动按成员顺序逐个触发；停止按持久化 PID 定向 kill 整组进程（连同子进程树）。
+- **整组状态**：任一成员在运行即为「运行中」，否则「已停止」；操作列按状态互斥显示「启动 / 停止」。
+- **统一日志视图**：抽屉内并排展示各成员最近一次执行的实时输出，方便观察"一组服务一起起没起来"。
+- 高频操作（日志 / 启动或停止）直接摆在操作列；编辑 / 删除 收入「⋯」下拉（删除带二次确认）。
+
+> 服务组只调度 `detach` 后台任务（常驻服务型），一个任务可同时属于多个服务组。
+
 ### 实时状态
 
 页面通过 SSE（`/api/events`）订阅任务**开始 / 结束 / 中止**事件：各看板自动刷新，执行成功 / 失败 / 超时 / 中止即时弹提示，无需手动刷新、无需轮询。
@@ -43,13 +55,13 @@
 - **超时**：超过 `timeout_s` → timedout 并中止进程树。
 - **中止**：`taskkill /F /T` 连同子进程树终止。
 - **停止后台进程**：按持久化 PID 定向 kill，兜底清理孤儿进程。
-- 子进程输出统一按 UTF-8 读取（`errors="replace"` 兜底非法字节），避免 Windows 下 GBK 解码崩溃。
+- 子进程输出按原始字节读取并**自动识别编码**：优先按 UTF-8 严格解码，失败则回退系统编码（Windows 中文系统为 GBK/cp936）。这样依赖是 GBK 输出的中文脚本/程序也能在日志里正常显示，避免乱码或解码崩溃。
 
 ---
 
 ## 前端看板
 
-Element Plus 暗色主题，四个页面覆盖「管任务 → 看执行 → 查历史」的完整使用场景：
+Element Plus 暗色主题，五个页面覆盖「管任务 → 看执行 → 查历史 → 组服务」的完整使用场景：
 
 | 页面     | 场景                                                                                      |
 | -------- | ----------------------------------------------------------------------------------------- |
@@ -57,9 +69,12 @@ Element Plus 暗色主题，四个页面覆盖「管任务 → 看执行 → 查
 | 任务列表 | 任务台账：新增 / 编辑 / 启停 / 删除，按类型 / 启用状态 / 名称搜索与排序，「启动」执行，正在执行的任务不可停用 |
 | 执行中心 | 正在运行的实例：实时列表、过滤、排序；可查看详情或中止                                        |
 | 执行历史 | 已完成实例的历史：按状态 / 类型 / 名称过滤、排序；点击查看详情（含实时日志）                  |
+| 服务组    | 把多个 `detach` 后台任务编组成「一台服务」，一键启动/停止整组、统一查看各成员实时日志          |
 
 - 任务详情、执行详情统一以右侧抽屉展示，可分页、可看该次执行的实时输出。
 - 新建 / 编辑任务亦在抽屉中完成。
+- 任务列表 / 服务组的操作列统一为「互斥主按钮 + ⋯ 收纳次要操作」：主操作右对齐、8px 间距、不换行。
+- 删除服务组（及停用中任务）均有 `ElMessageBox` 二次确认，避免误删。
 
 相关文档：`docs/layout-guide.md`（前端统一布局规范）。
 
@@ -107,6 +122,13 @@ npm run dev        # 启动在 http://127.0.0.1:5173
 | `POST`   | `/api/jobs/{name}/trigger`                                       | 手动触发；**409**=正在运行（并发上限 1）；**403**=已停用 |
 | `GET`    | `/api/job-schema`                                                | 各任务类型 → 参数表单结构（前端据此动态渲染）                       |
 | `GET`    | `/api/groups`                                                    | 任务分组元信息                                                       |
+| `GET`    | `/api/service-groups`                                            | 服务组列表                                                           |
+| `POST`   | `/api/service-groups`                                            | 新建服务组；body `{name, description, members:[{job_name,label,order}]}` |
+| `PUT`    | `/api/service-groups/{name}`                                     | 更新服务组（成员 / 描述 / 顺序）                                     |
+| `DELETE` | `/api/service-groups/{name}`                                     | 删除服务组（不影响成员任务本身）                                     |
+| `GET`    | `/api/service-groups/{name}`                                     | 服务组详情（含成员实时/最近状态）                                    |
+| `POST`   | `/api/service-groups/{name}/start`                               | 启动整组：按成员顺序逐个触发；**409**=有成员已在运行                |
+| `POST`   | `/api/service-groups/{name}/stop`                                | 停止整组：按持久化 PID 定向 kill 各成员进程树                        |
 | `GET`    | `/api/running?type=&q=&page=&page_size=`                         | 运行中实例（PID、日志流），过滤 + 分页                               |
 | `GET`    | `/api/history?status=&job=&type=&q=&page=&page_size=&all=`       | 执行历史，多条件过滤 + 分页                                          |
 | `GET`    | `/api/runs/{id}`                                                 | 单个运行实例详情（含完整日志）                                       |
@@ -150,12 +172,12 @@ scheduler-center/
     src/
       constants.js   # 前端全局常量映射
       api.js         # axios 请求封装
-      router.js      # 页面路由（/jobs、/running、/history）
+      router.js      # 页面路由（/dashboard、/jobs、/running、/history、/service-groups）
       App.vue        # 管理系统骨架 + 全局抽屉 + SSE 订阅
       store/         # drawer、refresh、toast、realtime
       composables/   # useTablePanel 等共享逻辑
-      components/    # JobDrawer / JobForm / JobEditModal / RunDetailDrawer / PagerBar
-      views/         # MenuBoard / RunningBoard / HistoryBoard
+      components/    # JobDrawer / JobForm / JobEditModal / RunDetailDrawer / RunLogPanel / PagerBar
+      views/         # DashboardBoard / MenuBoard / RunningBoard / HistoryBoard / ServiceGroupBoard
     vite.config.js   # dev 代理 /api -> 后端
     package.json
 ```
