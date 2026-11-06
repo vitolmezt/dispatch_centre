@@ -46,8 +46,9 @@ const menus = [
 
 <template>
   <div class="admin">
+    <!-- 全局固定框架：左侧导航 + 主区域（顶栏/内容/底栏）均占满视口，仅内容区随窗口变化 -->
     <el-container class="app-shell">
-      <!-- 左侧导航：管理系统常见深色窄栏 -->
+      <!-- 左侧导航：管理系统常见深色窄栏，固定宽度 -->
       <el-aside width="220px" class="aside">
         <div class="logo"><span class="logo-mark">S</span>调度中心</div>
         <nav class="nav">
@@ -57,19 +58,20 @@ const menus = [
         </nav>
       </el-aside>
 
-      <el-container>
+      <!-- 右侧主区：纵向 flex，顶栏/底栏固定，内容区占满剩余高度 -->
+      <el-container class="main-layout">
         <!-- 顶部栏：页面标题 + 右侧动作 -->
         <el-header class="topbar" height="56px">
           <div class="page-title">{{ pageTitle[route.path] || '调度中心' }}</div>
           <div class="top-actions"></div>
         </el-header>
 
-        <!-- 内容区 -->
+        <!-- 内容区：flex:1 填满剩余空间，overflow hidden —— 内部由各页面自行滚动 -->
         <el-main class="content">
           <RouterView />
         </el-main>
 
-        <!-- 页脚 -->
+        <!-- 页脚：固定于底部 -->
         <footer class="app-footer">
           <span>调度中心 Scheduler Center</span>
           <span class="muted">© {{ new Date().getFullYear() }} · 任务调度看板</span>
@@ -88,13 +90,22 @@ const menus = [
 </template>
 
 <style scoped>
-.admin { min-height: 100vh; }
-.app-shell { min-height: 100vh; }
+/* 固定全屏框架：无页面级滚动，只有内容区内部的表格/列表滚动 */
+.admin, .app-shell { height: 100vh; }
+.app-shell { display: flex; overflow: hidden; }
+.main-layout {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;   /* 不透出滚动，滚动交给 .content 内部 */
+}
 
 /* 左侧导航：管理系统常见深色窄栏 */
 .aside {
   background: #171a21; border-right: 1px solid var(--border);
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; flex-shrink: 0;
 }
 .logo {
   display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px;
@@ -113,19 +124,24 @@ const menus = [
 .nav-item:hover { background: #21252e; color: var(--text); }
 .nav-item.router-link-active { background: var(--primary); color: #fff; font-weight: 600; }
 
-/* 顶部栏 */
+/* 顶部栏：固定高度，不随内容滚动 */
 .topbar {
+  flex-shrink: 0;
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 22px; background: var(--panel); border-bottom: 1px solid var(--border);
 }
 .page-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .top-actions { display: flex; align-items: center; gap: 8px; }
 
-/* 内容区 */
-.content { padding: 22px; background: var(--bg); }
+/* 内容区：占满剩余高度，隐藏页面滚动 —— 各路由页内部自行滚动 */
+.content {
+  flex: 1; min-height: 0; overflow: hidden;
+  padding: 22px; background: var(--bg);
+}
 
-/* 页脚 */
+/* 页脚：固定于底部，不随内容滚动 */
 .app-footer {
+  flex-shrink: 0;
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 22px; border-top: 1px solid var(--border);
   background: var(--panel); font-size: 12px; color: var(--text);

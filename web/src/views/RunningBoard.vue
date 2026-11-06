@@ -1,21 +1,25 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch, onUnmounted } from 'vue'
 import { fetchRunning, abortRun } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel, dict } from '../constants'
 import { refreshTick, bump } from '../store/refresh'
 import { openRun } from '../store/drawer'
 import { toast } from '../store/toast'
+import { useTablePanel } from '../composables/useTablePanel'
 import PagerBar from '../components/PagerBar.vue'
 
 const runs = ref([])
 const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
-const pageSize = 10
+const pageSize = ref(10)
 const typeFilter = ref('')
 const qFilter = ref('')
 
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
+
+// 表格自适应高度：外框/表头拉伸到底部、body 随数据滚动
+const { panelRef, footerRef, tableHeight, bindTableResize, unbindTableResize } = useTablePanel()
 
 // 排序：默认按开始时间倒序（新启动的在最前）
 const sortField = ref('start')
@@ -30,7 +34,7 @@ function onSortChange({ prop, order }) {
 
 async function load() {
   loading.value = true
-  const params = { page: page.value, page_size: pageSize, sort: sortField.value, order: sortOrder.value }
+  const params = { page: page.value, page_size: pageSize.value, sort: sortField.value, order: sortOrder.value }
   if (typeFilter.value) params.type = typeFilter.value
   if (qFilter.value.trim()) params.q = qFilter.value.trim()
   try {
@@ -47,7 +51,8 @@ let qTimer = null
 watch(typeFilter, () => { page.value = 1; load() })
 watch(qFilter, () => { clearTimeout(qTimer); qTimer = setTimeout(() => { page.value = 1; load() }, 300) })
 
-onMounted(load)
+onMounted(() => { load(); bindTableResize() })
+onUnmounted(unbindTableResize)
 // 其它页面发生动作（触发/中止）后，本页刷新一次
 watch(refreshTick, () => load())
 
@@ -80,9 +85,9 @@ function open(run) { openRun(run.id) }
       </el-form>
     </el-card>
 
-    <!-- 数据表 -->
-    <el-card shadow="never" class="table-card">
-      <el-table :data="runs" v-loading="loading" @sort-change="onSortChange"
+    <!-- 数据表：表格占满剩余高度可滚动，分页固定底部 -->
+    <div class="table-panel" ref="panelRef">
+      <el-table :data="runs" v-loading="loading" :height="tableHeight" @sort-change="onSortChange"
                 :empty-text="runs.length ? '' : '当前没有正在执行的实例'">
         <el-table-column prop="name" label="任务名称" min-width="200" align="center">
           <template #default="{ row }"><strong>{{ row.job_name }}</strong></template>
@@ -112,8 +117,12 @@ function open(run) { openRun(run.id) }
         </el-table-column>
       </el-table>
 
-      <PagerBar :page="page" :total="total" :page-size="pageSize" @change="p => { page = p; load() }" />
-    </el-card>
+      <div class="table-footer" ref="footerRef">
+        <PagerBar :page="page" :total="total" :page-size="pageSize" with-sizes
+                  @change="p => { page = p; load() }"
+                  @size-change="s => { pageSize = s; page = 1; load() }" />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -122,4 +131,12 @@ function open(run) { openRun(run.id) }
 .toolbar :deep(.el-form-item) { margin-bottom: 0; }
 .toolbar :deep(.el-form--inline) { flex-wrap: wrap; row-gap: 12px; }
 .ops { display: flex; align-items: center; gap: 6px; }
+.table-panel {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel); overflow: hidden;
+}
+.table-footer { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--panel); }
 </style>
