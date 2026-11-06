@@ -74,8 +74,7 @@ class Executor:
         raise ValueError(f"不依赖 OS 进程的 Job 类型: {job.type}")
 
     # ---- FILEOP：文件系统操作（Python 原生，不拉进程） ----
-    @staticmethod
-    def _run_fileop(job: Job, run: Run) -> bool:
+    def _run_fileop(self, job: Job, run: Run) -> bool:
         action = str(job.params.get("action", "")).strip().upper()
         source = job.params.get("source", "")
         target = job.params.get("target", "")
@@ -89,10 +88,10 @@ class Executor:
                 if not recursive:
                     raise IsADirectoryError(f"目标是目录，需开启 recursive 才能删除: {source}")
                 shutil.rmtree(src)
-                run.append_log(f"已递归删除目录: {source}")
+                self.runner.on_log(run, f"已递归删除目录: {source}")
             else:
                 src.unlink()
-                run.append_log(f"已删除文件: {source}")
+                self.runner.on_log(run, f"已删除文件: {source}")
         elif action == "DELETE_DIR":
             if not src.exists():
                 raise FileNotFoundError(f"删除目标不存在: {source}")
@@ -100,7 +99,7 @@ class Executor:
                 shutil.rmtree(src)
             else:
                 src.unlink()
-            run.append_log(f"已删除: {source}")
+            self.runner.on_log(run, f"已删除: {source}")
         elif action == "COPY":
             if not target:
                 raise ValueError("copy 操作需要 target 参数")
@@ -109,13 +108,13 @@ class Executor:
             else:
                 Path(target).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, target)
-            run.append_log(f"已复制: {source} -> {target}")
+            self.runner.on_log(run, f"已复制: {source} -> {target}")
         elif action == "MOVE":
             if not target:
                 raise ValueError("move 操作需要 target 参数")
             Path(target).parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(src), target)
-            run.append_log(f"已移动: {source} -> {target}")
+            self.runner.on_log(run, f"已移动: {source} -> {target}")
         else:
             raise ValueError(f"不支持的 FILEOP 动作: {action}")
         return True
@@ -184,7 +183,6 @@ class Executor:
                 for raw in proc.stdout:
                     line = raw.rstrip("\n")
                     if line:
-                        run.append_log(line)
                         self.runner.on_log(run, line)
             proc.wait()
             run.exit_code = proc.returncode

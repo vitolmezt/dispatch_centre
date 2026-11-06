@@ -9,11 +9,13 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -56,6 +58,14 @@ class Scheduler:
         # SSE 实时事件订阅者队列（每个连接一个 Queue）
         self._subscribers: List[queue.Queue] = []
         self._sub_lock = threading.Lock()
+        # 按 run_id 定向的「日志流」订阅者：run 运行中每行日志实时推给订阅该 run 的连接.
+        self._log_subscribers: Dict[str, List[queue.Queue]] = {}
+        # 完整日志文件目录（在 db 同级的 data/logs 下），每条 run 一个 <run_id>.log 归档全量输出
+        self._logs_dir = Path(db_path).parent / "logs"
+        try:
+            self._logs_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:  # noqa: BLE001
+            self._logs_dir = None
 
         # 后台调度器（定时触发 cron Job）
         self.aps = BackgroundScheduler()
@@ -63,6 +73,9 @@ class Scheduler:
 
     # ---------- 回调（由 Executor 触发） ----------
     def on_started(self, run: Run):
+        # 给 run 绑定归档日志文件路径（data/logs/<run_id>.log），供实时写文件与全量回读
+        if self._logs_dir and not run.log_path:
+            run.log_path = str(self._logs_dir / f"{run.id}.log")
         with self._lock:
             self.running[run.id] = run
         self.store.save_run(run)
@@ -70,8 +83,57 @@ class Scheduler:
                         "job_name": run.job_name, "status": run.status})
 
     def on_log(self, run: Run, line: str):
-        # 为避免高频写库，日志先只在内存，运行结束后随 run 一起落库
-        pass
+        # 实时日志：进内存（有界）+ 写归档文件 + 定向推给订阅该 run 的 SSE 连接
+        run.append_log(line)
+        self._append_log_file(run, line)
+        self.publish_log(run.id, line)
+
+    # ---------- 按 run 定向的日志流订阅（SSE） ----------
+    def subscribe_log(self, run_id: str) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=500)
+        with self._sub_lock:
+            self._log_subscribers.setdefault(run_id, []).append(q)
+        return q
+
+    def unsubscribe_log(self, run_id: str, q: queue.Queue):
+        with self._sub_lock:
+            subs = self._log_subscribers.get(run_id)
+            if subs:
+                try:
+                    subs.remove(q)
+                except ValueError:
+                    pass
+                if not subs:
+                    self._log_subscribers.pop(run_id, None)
+
+    def publish_log(self, run_id: str, line: str):
+        """把一行日志推给订阅了该 run 的所有连接；队列满则丢弃最旧，不阻塞."""
+        with self._sub_lock:
+            subs = list(self._log_subscribers.get(run_id) or [])
+        if not subs:
+            return
+        payload = f"data: {json.dumps({'type': 'log', 'run_id': run_id, 'line': line}, ensure_ascii=False)}\n\n"
+        for q in subs:
+            try:
+                if q.full():
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        pass
+                q.put_nowait(payload)
+            except queue.Full:
+                pass
+
+    def _append_log_file(self, run: Run, line: str):
+        """把一行追加到 <run_id>.log 归档文件（UTF-8，环形 2000 行覆盖最旧）."""
+        if not self._logs_dir or not run.log_path:
+            return
+        try:
+            path = Path(run.log_path)
+            with path.open("a", encoding="utf-8", errors="replace") as f:
+                f.write(line + "\n")
+        except Exception:  # noqa: BLE001
+            pass
 
     def on_finished(self, run: Run):
         with self._lock:
@@ -79,6 +141,21 @@ class Scheduler:
         self.store.save_run(run)
         logger.info(f"Job[{run.job_name}] run[{run.id}] -> {run.status}")
         self.publish_finished(run)
+        self._publish_log_end(run.id)
+
+    def _publish_log_end(self, run_id: str):
+        """通知订阅该 run 日志流的连接：日志已结束（run 结束），流式连接可收尾."""
+        with self._sub_lock:
+            subs = list(self._log_subscribers.get(run_id) or [])
+        if not subs:
+            return
+        payload = (f"data: "
+                   f"{json.dumps({'type': 'log', 'run_id': run_id, 'end': True}, ensure_ascii=False)}\n\n")
+        for q in subs:
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                pass
 
     def publish_finished(self, run: "Run"):
         """幂等推送 finished 事件：同一 run 只广播一次，避免 abort/超时与 worker 结束
@@ -454,6 +531,19 @@ class Scheduler:
         """返回内存中某运行实例（实时日志），不存在返回 None."""
         with self._lock:
             return self.running.get(run_id)
+
+    def read_log_file(self, run_id: str) -> Optional[List[str]]:
+        """读取某 run 的完整日志归档文件（若存在）为行列表；无文件返回 None."""
+        if not self._logs_dir:
+            return None
+        path = self._logs_dir / f"{run_id}.log"
+        try:
+            if not path.exists():
+                return None
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                return f.read().splitlines()
+        except Exception:  # noqa: BLE001
+            return None
 
     def _sort_key(self, obj, field: str):
         """按字段取排序键：时间字段优先按可比较字符串，缺失值排到末尾."""

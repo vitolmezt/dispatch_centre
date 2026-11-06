@@ -182,6 +182,7 @@ class Run:
     exit_code: Optional[int] = None
     timeout_s: int = 0
     log: List[str] = field(default_factory=list)  # 按行追加（进程 stdout+stderr）
+    log_path: Optional[str] = None               # 完整日志文件（可选，超大输出回退/全量查看）
     error: str = ""
 
     def __post_init__(self):
@@ -202,8 +203,10 @@ class Run:
             return None
 
     def append_log(self, line: str):
-        if len(self.log) >= 5000:  # 日志上限，防止内存膨胀
-            self.log = self.log[-1000:]
+        # 保持最近 LOG_LIMIT 行（覆盖最旧），避免内存/落库无限膨胀。
+        # 实时前端按行追加；超长输出由 log_path 完整文件兜底全量查看。
+        if len(self.log) >= 2000:
+            self.log = self.log[-1999:]
         self.log.append(line)
 
     @classmethod
@@ -227,6 +230,7 @@ class Run:
             "exit_code": self.exit_code,
             "timeout_s": self.timeout_s,
             "duration_ms": self.duration_ms,
+            "log_path": self.log_path,
             "error": self.error,
         }
         if include_log:

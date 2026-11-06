@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -331,6 +332,58 @@ def events():
 def config_info():
     return {"config_path": str(get_scheduler().config_path),
             "jobs_count": len(get_scheduler().jobs)}
+
+
+# ---------- 实时日志流（按 run 定向 SSE） ----------
+@app.get("/api/runs/{run_id}/stream")
+def run_log_stream(run_id: str):
+    """Server-Sent Events：某 run 运行中的实时日志，按行推送。
+
+    - 先推送该 run 当前已收集的日志（内存/归档文件），
+    - 之后每新一行实时推一条 {type:"log", line}，
+    - run 结束推 {type:"log", end:true} 后关闭连接。
+    仅当该 run 运行中时，连接才有意义；历史 run 直接走 /api/runs/{id}（含 log）。
+    """
+    s = get_scheduler()
+
+    # 若是历史（不在运行中），直接以结束哨兵收尾，避免空等
+    mem = s.get_running(run_id)
+    if mem is None:
+        # 无运行实例也无日志文件 → 404
+        if s.store.get_run(run_id) is None and not s.read_log_file(run_id):
+            raise HTTPException(status_code=404, detail="run 不存在")
+        def done():
+            yield "retry: 3000\n\n"
+            yield "data: " + json.dumps({"type": "log", "run_id": run_id, "end": True}, ensure_ascii=False) + "\n\n"
+        return StreamingResponse(done(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "Connection": "keep-alive",
+                                          "X-Accel-Buffering": "no"})
+
+    q = s.subscribe_log(run_id)
+
+    def gen():
+        try:
+            yield "retry: 3000\n\n"
+            # 先回放当前已收集的日志
+            for line in (mem.log if mem else []):
+                yield "data: " + json.dumps({"type": "log", "run_id": run_id, "line": line}, ensure_ascii=False) + "\n\n"
+            # 再持续接收新增行，直到收到结束哨兵
+            while True:
+                try:
+                    payload = q.get(timeout=15)
+                    yield payload
+                    if '"end": true' in payload:
+                        break
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            s.unsubscribe_log(run_id, q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "Connection": "keep-alive",
+                                      "X-Accel-Buffering": "no"})
 
 
 # ---------- 选择本机路径（系统原生对话框） ----------
