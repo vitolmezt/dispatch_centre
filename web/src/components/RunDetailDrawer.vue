@@ -46,7 +46,26 @@ const metaItems = computed(() => {
     { label: '退出码', value: String(r.exit_code ?? '—') },
   ]
   if (r.error) items.push({ label: '错误', value: r.error })
+  // Phase 2 · 身份 / 运行形态 / 中断上下文字段（有值才显示）
+  if (r.node_id) items.push({ label: '节点', value: r.node_id })
+  if (r.job_type !== 'FILEOP') {
+    items.push({ label: '进程独立', value: r.detached ? '是 (detach 常驻)' : '否' })
+    if (r.process_group_id != null) items.push({ label: '进程树根 PID', value: String(r.process_group_id) })
+    if (r.executable_path) items.push({ label: '可执行文件', value: r.executable_path })
+    if (r.command_line_fingerprint) items.push({ label: '命令指纹', value: r.command_line_fingerprint })
+    if (r.last_heartbeat) items.push({ label: '最近心跳', value: String(r.last_heartbeat).replace('T', ' ').slice(0, 19) })
+    if (r.adopted) items.push({ label: '接管状态', value: '已接管 (ORPHANED → RUNNING)' })
+  }
   return items
+})
+
+// Phase 2 · 异常/待核查状态的搁置原因（用于 ORPHANED / UNKNOWN / INTERRUPTED 醒目展示）
+const interruptNotice = computed(() => {
+  const r = run.value
+  if (!r) return ''
+  const abnormal = ['ORPHANED', 'UNKNOWN', 'INTERRUPTED']
+  if (!abnormal.includes(String(r.status).toUpperCase())) return ''
+  return r.interrupted_reason || r.error || statusLabel(r.status)
 })
 
 // 切换是否跟随滚动到底
@@ -141,6 +160,12 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
+        <!-- Phase 2 · 异常状态搁置原因：ORPHANED / UNKNOWN / INTERRUPTED 时醒目提示 -->
+        <div v-if="interruptNotice" class="intr-flag">
+          <strong>搁置原因</strong>
+          <span>{{ interruptNotice }}</span>
+        </div>
+
         <div class="fn-row">
           <h4 class="fn-sec">运行日志</h4>
           <span v-if="isStreaming" class="live-tag">● 实时</span>
@@ -176,6 +201,13 @@ onBeforeUnmount(() => {
 .m-item { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
 .m-item label { font-size: 12px; color: var(--muted); }
 .m-item span { font-size: 13px; word-break: break-all; }
+.intr-flag {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: rgba(214, 74, 69, .10); border: 1px solid rgba(214, 74, 69, .35);
+  color: var(--el-color-danger, #d64845); border-radius: 8px; padding: 10px 12px; font-size: 13px;
+}
+.intr-flag strong { white-space: nowrap; flex-shrink: 0; }
+.intr-flag span { word-break: break-all; line-height: 1.5; }
 .log { background: #0b0d10; font-family: var(--mono); font-size: 12px; max-height: 55vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .log pre { margin: 0; padding: 8px 10px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .log code { display: block; font-size: 12px; line-height: 1.55; }

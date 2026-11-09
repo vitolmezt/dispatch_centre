@@ -16,8 +16,18 @@ const page = ref(1)
 const pageSize = ref(10)
 const typeFilter = ref('')
 const qFilter = ref('')
+const statusFilter = ref('')
 
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
+// Phase 2 · 执行中心状态筛选：按目标状态隔离（含异常状态 ORPHANED/UNKNOWN/STARTING）。
+// 后端 /api/running 原生支持 status 过滤，分页总条数与筛选一致。
+const statusOptions = [
+  { v: '', l: '全部状态' },
+  { v: 'RUNNING', l: '正常运行' },
+  { v: 'STARTING', l: '预登记中' },
+  { v: 'ORPHANED', l: '孤儿' },
+  { v: 'UNKNOWN', l: '待核查' },
+]
 // 表格自适应高度 + 行高铺满统一由 AutoTablePanel 组件处理
 
 // 排序：默认按开始时间倒序（新启动的在最前）
@@ -36,6 +46,7 @@ async function load() {
   const params = { page: page.value, page_size: pageSize.value, sort: sortField.value, order: sortOrder.value }
   if (typeFilter.value) params.type = typeFilter.value
   if (qFilter.value.trim()) params.q = qFilter.value.trim()
+  if (statusFilter.value) params.status = statusFilter.value
   try {
     const res = await fetchRunning(params)
     runs.value = res.items || []
@@ -61,6 +72,7 @@ const stats = computed(() => {
 // 条件变化自动刷新：下拉立即、名称 300ms 去抖
 let qTimer = null
 watch(typeFilter, () => { page.value = 1; load() })
+watch(statusFilter, () => { page.value = 1; load() })
 watch(qFilter, () => { clearTimeout(qTimer); qTimer = setTimeout(() => { page.value = 1; load() }, 300) })
 
 onMounted(() => { load() })
@@ -98,6 +110,11 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
         <el-form-item label="任务类型">
           <el-select v-model="typeFilter" placeholder="全部类型" clearable style="width:140px">
             <el-option v-for="o in typeOptions" :key="o.v" :value="o.v" :label="o.l" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="statusFilter" style="width:130px">
+            <el-option v-for="o in statusOptions" :key="o.v" :value="o.v" :label="o.l" />
           </el-select>
         </el-form-item>
         <el-form-item label="任务名称">

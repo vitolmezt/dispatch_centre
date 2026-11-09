@@ -948,6 +948,7 @@ class Scheduler:
         return v  # ISO 时间字符串 / 名称字符串均可直接比较
 
     def running_view(self, *, job_type: Optional[str] = None, q: Optional[str] = None,
+                     status: Optional[str] = None,
                      sort: Optional[str] = None, order: str = "desc",
                      offset: int = 0, limit: int = 100) -> dict:
         """执行中/待核查视图（Phase 2）.
@@ -955,9 +956,13 @@ class Scheduler:
         数据源为 store.running_runs()：包含 STARTING / RUNNING / ORPHANED /
         UNKNOWN 分组（这些状态留在"运行/执行中"区展示；INTERRUPTED 归入历史）。
         附带 alive_total（== running_process_count，仅统计已确认存活或管理中的
-        状态，UNKNOWN 不计）与按 status 的分组 counts。
+        状态，UNKNOWN 不计）与按 status 的分组 counts。status 参数用于按目标
+        状态精确过滤（前端"仅异常"筛选），可传单个状态名（不区分大小写）。
         """
         runs = list(self.store.running_runs())
+        if status:
+            status = status.strip().upper()
+            runs = [r for r in runs if r.status.upper() == status]
         if job_type:
             runs = [r for r in runs if r.job_type.upper() == job_type.upper()]
         if q:

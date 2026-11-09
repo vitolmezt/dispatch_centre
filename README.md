@@ -47,7 +47,16 @@
 
 ### 实时状态
 
-页面通过 SSE（`/api/events`）订阅任务**开始 / 结束 / 中止**事件：各看板自动刷新，执行成功 / 失败 / 超时 / 中止即时弹提示，无需手动刷新、无需轮询。
+页面通过 SSE（`/api/events`）订阅任务**开始 / 结束 / 中止 / 状态收敛**事件：各看板自动刷新，执行成功 / 失败 / 超时 / 中止即时弹提示，无需手动刷新、无需轮询。
+
+### 状态一致性与异常恢复（Phase 2）
+
+调度中心启动 / 运行期间会对进程做**状态收敛与异常恢复**，保证"数据库里的状态"与"真实进程"一致：
+
+- **进程身份凭据**：每次拉起都会采集 PID + 进程创建时刻 + 可执行文件 + 命令行指纹 + 进程树根，写入运行记录；重启后能据此可靠地识别"是不是原来那个进程"。
+- **启动恢复**：服务重启后扫描残留记录——已确认死亡的收敛为 `INTERRUPTED`；确认存活但丢失管理关系的标记为 `ORPHANED` 并走**四问接管**（身份 / 监控 / 日志 / 停止能力四项校验全通过才重建为 `RUNNING`）。
+- **心跳机制**：管理进程定期上报心跳并落库；心跳超时**仅作活性参考**，绝不单独作为"进程已死"的判定依据——是否判定死亡一律以 OS 探针实测为准。
+- **安全停止（SAFE-FIRST）**：停止 detach 后台进程前先做身份核验（PID 未被复用/凭据可信），核验失败**拒绝操作、绝不盲杀**；没有有效身份凭据的事件一律归 `UNKNOWN` 待核查，不做幂等自动重试、不模糊认领孤儿。
 
 ### 产物 / 运行口径
 
@@ -91,12 +100,37 @@ python run.py          # 启动在 http://0.0.0.0:8000
 ```
 
 - 访问日志带时间戳；接口文档见 `http://127.0.0.1:8000/docs`（Swagger）。
-- 环境变量覆盖默认路径：
+- 环境变量覆盖默认路径与行为：
 
 | 变量          | 含义              | 默认                         |
 | ------------- | ----------------- | ---------------------------- |
 | `SC_CONFIG` | 任务配置 json     | `server/config/jobs.json`  |
 | `SC_DB`     | SQLite 数据库路径 | `server/data/scheduler.db` |
+| `SC_SAFE_ROOT` | 进程允许的根目录（路径根隔离） | 运行目录 |
+| `SC_EXEC_ROOT` | 脚本/程序可执行根目录 | `server/scripts` |
+| `SC_ALLOW_ORIGINS` | 允许的前端跨域来源（逗号分隔） | `http://localhost:5173` |
+| `SC_SESSION_TTL` | 会话 token 有效期（秒） | `43200`（12 小时） |
+| `SC_TOKEN` | 长期管理凭证（环境变量直给） | 无 |
+| `SC_TOKEN_FILE` | 长期管理凭证密钥文件路径 | 默认 `server/data/sc_token` |
+| `SC_AUTO_GEN_TOKEN` | 为 `1` 且未配置凭证时首次启动自动生成 | 无 |
+
+### 认证与凭证（会登录）
+
+所有管理接口（除 `login` / `health` / `constants` 等少数）均需会话认证。凭证分两层：
+
+1. **长期管理凭证（登录密码）**：存在 `server/data/sc_token`（默认）。来源优先级：`SC_TOKEN` 环境变量 → `SC_TOKEN_FILE` 指定文件 → 默认 `data/sc_token` → `SC_AUTO_GEN_TOKEN=1` 时自动生成。**该凭证无过期机制**，只要文件存在内容不变就一直有效。
+2. **短期会话 token**：登录成功（`POST /api/login` 用长期凭证校验）后签发，存活 `SC_SESSION_TTL`（默认 12h），过期需重新登录；每次服务重启内存会话清空、所有会话立即失效；重新登录会作废旧会话（轮换）。
+
+> ⚠️ **跨机部署说明**：调度中心为**单机单实例**设计，不共享内存会话。另一台机器能否登录取决于是否拉取了相同的 `data/sc_token`：
+> - 一起拉取 → 用同一长期凭证可登录，但两台是各自独立的会话实例；
+> - 未拉取 + 设了 `SC_AUTO_GEN_TOKEN=1` → 新机器自动生成**不同**的凭证，需用新文件里的值；
+> - 未拉取 + 未设 → 无法生成、无法登录。
+>
+> **安全建议**：`data/sc_token` 已被 `.gitignore` 排除、不会提交到仓库。若在多机部署，请每台单独配置 `SC_TOKEN` / `SC_TOKEN_FILE` 或依赖 `SC_AUTO_GEN_TOKEN`，不要把管理口令带进代码库。
+
+### 登录限流
+
+同一来源 IP 在滑动窗口内连续失败超限会进入冷却，防止暴力猜测长期凭证（可用 `SC_LOGIN_WINDOW` / `SC_LOGIN_MAX_FAIL` / `SC_LOGIN_COOLDOWN` 覆盖）。
 
 ### 前端
 
@@ -129,25 +163,51 @@ npm run dev        # 启动在 http://127.0.0.1:5173
 | `GET`    | `/api/service-groups/{name}`                                     | 服务组详情（含成员实时/最近状态）                                    |
 | `POST`   | `/api/service-groups/{name}/start`                               | 启动整组：按成员顺序逐个触发；**409**=有成员已在运行                |
 | `POST`   | `/api/service-groups/{name}/stop`                                | 停止整组：按持久化 PID 定向 kill 各成员进程树                        |
-| `GET`    | `/api/running?type=&q=&page=&page_size=`                         | 运行中实例（PID、日志流），过滤 + 分页                               |
-| `GET`    | `/api/history?status=&job=&type=&q=&page=&page_size=&all=`       | 执行历史，多条件过滤 + 分页                                          |
-| `GET`    | `/api/runs/{id}`                                                 | 单个运行实例详情（含完整日志）                                       |
-| `POST`   | `/api/runs/{id}/abort`                                           | 中止运行实例                                                         |
-| `POST`   | `/api/runs/{id}/stop`                                            | 停止 detach 后台进程（按持久化 PID 定向 kill）                       |
-| `GET`    | `/api/health`                                                    | 健康检查                                                             |
-| `GET`    | `/api/config`                                                    | 服务配置信息                                                         |
-| `GET`    | `/api/events`                                                    | SSE 事件流（任务开始/结束/中止实时推送）                             |
+| `GET`    | `/api/running?type=&q=&status=&page=&page_size=` | 运行中实例（含 PID、异常状态分桶计数 alive_total），多条件过滤 + 分页；`status` 可按目标状态精确过滤（R运行正常/STARTING/ORPHANED/UNKNOWN） |
+| `GET`    | `/api/history?status=&job=&type=&q=&page=&page_size=&all=` | 执行历史，多条件过滤 + 分页（`status` 含 INTERRUPTED 等终态） |
+| `GET`    | `/api/runs/{id}`                                                 | 单个运行实例详情（含完整日志与身份/心跳元信息）                       |
+| `POST`   | `/api/runs/{id}/abort`                                           | 中止运行实例（非 detach 的强中止）                                    |
+| `POST`   | `/api/runs/{id}/stop`                                            | 停止 detach 后台进程（身份核验后按持久化 PID 定向 kill，核验失败则拒绝） |
+| `GET`    | `/api/constants`                                                 | 全局状态 / 类型 / 分组常量字典（含状态中文翻译）                       |
+| `POST`   | `/api/login`                                                     | 用长期管理凭证换取短期会话 token，body `{token}`                       |
+| `POST`   | `/api/logout`                                                    | 主动登出，作废当前会话 token                                          |
+| `GET`    | `/api/audit`                                                     | 审计日志                                                              |
+| `GET`    | `/api/health`                                                    | 健康检查（无需认证）                                                   |
+| `GET`    | `/api/config`                                                    | 服务配置信息                                                           |
+| `GET`    | `/api/events`                                                    | SSE 事件流（任务开始/结束/中止/状态收敛实时推送，需会话认证）           |
 
 ---
 
 ## 执行状态机
 
+**进程类任务**（COMMAND / SCRIPT / PROGRAM）的状态演进如下（Phase 1 + Phase 2）：
+
 ```
-trigger ──► pending ──► running ──► succeeded
-                              ├──► failed
-                              ├──► timedout
-                              └──► killed (用户中止)
+trigger ──► STARTING ──► RUNNING ──► SUCCEEDED
+                  │            ├──► FAILED
+                  │            ├──► TIMEDOUT
+                  │            └──► KILLED (用户中止 / 安全停止)
+                  │
+                  ├──► UNKNOWN      # 预登记后无法安全核验（无身份凭据 / 遗留记录）
+                  └──► INTERRUPTED  # 确认进程已死，收敛为异常终态
+
+RUNNING ──(重启且存活)──► ORPHANED ──(四问接管通过)──► RUNNING(adopted)
+RUNNING ──(重启且存活)──► ORPHANED ──(接管未通过)──► 保持 ORPHANED 待人工处理
 ```
+
+各异常状态的语义：
+
+| 状态 | 中文 | 进程真实情况 | 触发场景 |
+| ---- | ---- | ------------ | -------- |
+| `STARTING` | 预登记中 | 正要拉起 | 触发任务、spawn 前的中间态（防崩溃丢失启动意图） |
+| `RUNNING` | 进行中 | 存活且正常管理 | 正常执行 / 孤儿四问接管后重建 |
+| `ORPHANED` | 孤儿 | 存活但管理关系丢失 | detach 进程在服务崩溃后继续存活，待四问接管 |
+| `UNKNOWN` | 待核查 | 无法安全判断 | 无身份凭据的残留 STARTING / Phase-1 遗留 / 接管失败自救 |
+| `INTERRUPTED` | 已中断 | 确认已死 | 重启收敛死进程 / 心跳超时 + OS 探针确认死亡 |
+| `SUCCEEDED` / `FAILED` / `TIMEDOUT` / `KILLED` | 终态 | 已退出 | 正常完成 / 退出码非 0 / 超时中止 / 用户中止 |
+
+> `FILEOP` 为同步文件操作，无进程态，直接落 `SUCCEEDED` / `FAILED`。
+> 异常任务一律保持终态、**不自愈、不自动重试**，由管理员显式手动重新触发。
 
 ---
 
@@ -159,8 +219,10 @@ scheduler-center/
     app/
       models.py      # Job / Run 数据模型与状态机（type + params 类型驱动结构）
       executor.py    # 跨平台进程执行器 + FILEOP 内建动作
-      scheduler.py   # 调度核心 + APScheduler 定时
+      scheduler.py   # 调度核心 + APScheduler 定时 + 异常恢复/心跳/安全停止
       store.py       # SQLite 持久化
+      auth.py        # 认证与会话管理（长期凭证 / 会话 token / 登录限流）
+      identity.py    # 进程身份采集与安全停止（PID + 创建时刻 + 指纹 / OS 探针）
       main.py        # FastAPI 路由
       constants.py   # 全局枚举常量字典
     config/jobs.json # 老式任务配置（数据库为空时的首次迁移种子）
