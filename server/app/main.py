@@ -309,7 +309,9 @@ def list_running(type: Optional[str] = Query(None, alias="type"),
                  page_size: int = Query(100, ge=1, le=1000)):
     result = get_scheduler().running_view(job_type=type, q=q, sort=sort, order=order,
                                           offset=(page - 1) * page_size, limit=page_size)
-    return {"total": result["total"], "page": page, "page_size": page_size, "items": result["items"]}
+    return {"total": result["total"], "page": page, "page_size": page_size,
+            "items": result["items"], "alive_total": result["alive_total"],
+            "counts": result["counts"]}
 
 
 # ---------- 历史 ----------

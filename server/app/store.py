@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import uuid
 import threading
@@ -15,6 +16,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .models import Job, Run, ServiceGroup
+
+
+def _heartbeat_batch_sec() -> float:
+    """批量心跳合并写盘的阈值（秒）。默认 5s；可用 SC_HEARTBEAT_BATCH_SEC 覆盖。"""
+    try:
+        return max(1.0, float(os.environ.get("SC_HEARTBEAT_BATCH_SEC", "5")))
+    except (TypeError, ValueError):
+        return 5.0
 
 
 class Store:
@@ -166,7 +175,31 @@ class Store:
             self._conn.commit()
 
     # ---- runs ----
-    def save_run(self, run: Run):
+    def save_run(self, run: Run, heartbeat_only: bool = False):
+        """持久化一个 Run.
+
+        heartbeat_only=True 表示这次只是批量心跳刷新：仅当距离上一次落库超过
+        SC_HEARTBEAT_BATCH_SEC 才真正写盘（合并写），从而避免高频心跳把 SQLite
+        写放大。心跳绝不单独作为"进程存活"判据，只做管理链路活性记录。
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        if heartbeat_only:
+            # 心跳节流：与库内 last_heartbeat 相比，未超过阈值则跳过写盘（合并写）。
+            old = self.get_run(run.id)
+            if old is not None:
+                prev = old.last_heartbeat or ""
+                try:
+                    from datetime import datetime as _dt
+                    gap = (datetime.now(timezone.utc) -
+                           _dt.fromisoformat(prev)).total_seconds()
+                except Exception:  # noqa: BLE001
+                    gap = 1.0 + _heartbeat_batch_sec()
+                if gap < _heartbeat_batch_sec():
+                    # 未到写盘时机：仅把最新心跳时间标记到内存对象上，
+                    # 由下一次真正落库合并提交（轻量合并，避免高频写放大）。
+                    run.last_heartbeat = now
+                    return
+            run.last_heartbeat = now
         row = json.dumps(run.to_dict(include_log=True))
         with self._lock:
             c = self._conn.cursor()
@@ -257,7 +290,33 @@ class Store:
         return Run.from_dict(json.loads(row["run_json"]))
 
     def running_runs(self) -> List[Run]:
-        return self.get_runs(limit=500, status="RUNNING")
+        """返回所有"应展示在执行中心/运行列表"的运行。
+
+        Phase 2：已确认存活或待核查的运行都留在运行区（RUNNING / STARTING /
+        ORPHANED / UNKNOWN）。INTERRUPTED 已确认异常结束 -> 归入历史。
+        注意：UNKNOWN 仅表示"待核查"，并不代表已确认存活；是否计入"实际在跑数"
+        由 running_process_count() 决定（UNKNOWN 不计）。
+        """
+        states = ("STARTING", "RUNNING", "ORPHANED", "UNKNOWN")
+        if not states:
+            return []
+        sql = "SELECT run_json FROM runs WHERE status IN ({})".format(
+            ",".join("?" * len(states)))
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(states)).fetchall()
+        return [Run.from_dict(json.loads(r["run_json"])) for r in rows]
+
+    def running_process_count(self) -> int:
+        """实际在跑的进程数：仅统计已确认存活/在管理中的状态.
+
+        UNKNOWN 不代表"已确认存活"，因此不计入 actual running-process count。
+        """
+        states = ("STARTING", "RUNNING", "ORPHANED")
+        sql = "SELECT COUNT(*) FROM runs WHERE status IN ({})".format(
+            ",".join("?" * len(states)))
+        with self._lock:
+            row = self._conn.execute(sql, tuple(states)).fetchone()
+        return row[0] if row else 0
 
     def delete_runs(self, ids: List[str]) -> int:
         """按 id 批量删除历史记录，返回实际删除条数."""

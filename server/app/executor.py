@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .models import Job, Run
+from . import identity as identity_mod
 
 # 子进程文本解码编码：跟随系统区域语言（Windows 中文系统为 GBK/cp936）。
 # 不硬编码单一编码：行解码时先试 UTF-8 严格，失败回退该系统编码（自动识别两种常见输出）。
@@ -284,6 +285,23 @@ class Executor:
                 else 0,
             )
             run.pid = proc.pid
+            # Phase 2 · 身份采集（STARTING -> RUNNING 的凭据基础）：
+            #   spawn 后立即采集 OS 身份快照并写入 run，管理和恢复才能可靠区分"同一进程"。
+            run.detached = detach
+            run.process_group_id = None  # 由 capture_identity 填写真实组/树根（不假设==pid）
+            ident = identity_mod.capture_identity(
+                proc.pid, cmdline=argv,
+                own_exe_hint=(argv[0] if argv else None),
+            )
+            run.process_create_time = ident["process_create_time"]
+            run.executable_path = ident["executable_path"]
+            run.command_line_fingerprint = ident["command_line_fingerprint"]
+            run.process_group_id = ident["process_group_id"]
+            # 身份凭据必须采集成功；否则绝不允许盲跑（无法做安全停止/恢复）
+            if not run.process_create_time:
+                run.status = "INTERRUPTED"
+                run.error = "无法采集进程创建时刻（身份凭据），已按安全规则拒绝继续"
+                raise RuntimeError(run.error)
 
             with self._lock:
                 self._procs[run.id] = proc

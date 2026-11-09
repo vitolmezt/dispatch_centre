@@ -14,6 +14,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -22,6 +23,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .executor import Executor
+from . import identity as identity_mod
 from .models import Job, Run, job_to_api, ServiceGroup
 from .store import Store
 
@@ -31,6 +33,22 @@ logger = logging.getLogger("scheduler")
 def _as_type(v) -> str:
     """归一化类型 */"""
     return str(v or "").strip().upper()
+
+
+def _heartbeat_interval_sec() -> int:
+    """心跳周期（秒）。默认 10s；可用 SC_HEARTBEAT_INTERVAL_SEC 覆盖."""
+    try:
+        return max(1, int(os.environ.get("SC_HEARTBEAT_INTERVAL_SEC", "10")))
+    except (TypeError, ValueError):
+        return 10
+
+
+def _heartbeat_timeout_times() -> int:
+    """心跳超时判定系数（连续多少次未收到心跳视为“异常需要核查”。默认 3）."""
+    try:
+        return max(1, int(os.environ.get("SC_HEARTBEAT_TIMEOUT_TIMES", "3")))
+    except (TypeError, ValueError):
+        return 3
 
 
 def _collect_job(job: Job, jobs: List[Job], errors: List[str]):
@@ -54,6 +72,22 @@ class Scheduler:
         self.service_groups: Dict[str, ServiceGroup] = {}  # 服务组名 -> ServiceGroup
         self.running: Dict[str, Run] = {}  # run_id -> Run（进行中）
         self._lock = threading.RLock()
+        # Phase 2：本机节点标识（默认取 hostname，可用 SC_NODE_ID 覆盖），用于身份落库归属
+        # 注意：SC_NODE_ID 必须始终优先，即便平台没有 os.uname（如 Windows）。
+        _env_node = os.environ.get("SC_NODE_ID")
+        if _env_node:
+            self.node_id = _env_node
+        elif hasattr(os, "uname"):
+            self.node_id = os.uname().nodename or "local"
+        else:
+            self.node_id = os.environ.get("COMPUTERNAME", "local") or "local"
+        # Phase 2：心跳周期与超时系数（管理链路活性；OS 探针才是死亡权威）
+        self.heartbeat_interval = _heartbeat_interval_sec()
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_stop = False
+        # 已结束的总运行计数（无实际用途，仅保留位）
+        self._heartbeat_runs: Dict[str, "Run"] = {}
+
         # 已广播过 finished 的 run_id 集合：保证中止/结束只推送一次 finished 事件
         self._finished: set = set()
         # SSE 实时事件订阅者队列（每个连接一个 Queue）
@@ -77,6 +111,12 @@ class Scheduler:
         # 给 run 绑定归档日志文件路径（data/logs/<run_id>.log），供实时写文件与全量回读
         if self._logs_dir and not run.log_path:
             run.log_path = str(self._logs_dir / f"{run.id}.log")
+        # Phase 2：STARTING -> RUNNING。身份凭据已由 executor 在 spawn 后采集，
+        # 这里把"预登记"推进为"已运行并被管理"，并记录首次心跳。
+        if run.status == "STARTING":
+            run.status = "RUNNING"
+            run.node_id = self.node_id
+        run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
         with self._lock:
             self.running[run.id] = run
         self.store.save_run(run)
@@ -305,10 +345,20 @@ class Scheduler:
             for e in errs:
                 logger.error(f"配置错误: {e}")
         self.service_groups = self.store.load_service_groups()
+        # Phase 2 · 启动恢复扫描：在后台调度器启动前，先处理上次遗留下来的运行态
+        # （RUNNING/STARTING/ORPHANED/UNKNOWN）。收敛死进程 / 认领孤儿 / 核查残留 STARTING。
+        self.recover_on_start()
+        # Phase 2 · 心跳/异常核查循环（仅登记管理态活跃运行，OS 探针才是死亡权威）
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, name="phase2-heartbeat", daemon=True)
+        self._heartbeat_thread.start()
         self._register_all()
         self.aps.start()
 
     def shutdown(self):
+        # Phase 2：停止心跳循环（避免后台线程在服务关闭后继续跑）
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            self._heartbeat_stop = True
         # 中止所有运行中的实例
         for run_id in list(self.running.keys()):
             run = self.running.get(run_id)
@@ -336,6 +386,13 @@ class Scheduler:
                 trigger=trigger,
                 timeout_s=job.timeout_s,
             )
+            # Phase 2 · STARTING 预登记：
+            #   在真正 spawn 之前先生成 run_id 并把"启动意图"落库为 STARTING，
+            #   这样即使 spawn→落库间调度器崩溃，启动恢复也能扫描到这条残留 STARTING，
+            #   而非静默丢失意图。node_id 先标记归属；身份凭据由 spawn 后采集填入。
+            run.status = "STARTING"
+            run.node_id = self.node_id
+            run.detached = bool(job.params.get("detach", False))
             # 同步占位：立即标记为运行中，防止并发重复触发。
             self.running[run.id] = run
         self.store.save_run(run)
@@ -350,6 +407,193 @@ class Scheduler:
             run.status = "FAILED"
             run.error = str(e)
             self.on_finished(run)
+
+    # ---------- Phase 2 · 启动恢复扫描 ----------
+    def _adopt_orphan(self, run: Run):
+        """detach 存活孤儿 → 四问接管判定（修订版3 §6.1，最终修正②）.
+
+        四问（退出码不是接管前提，不能进程还跑着预取）：
+          1. 进程身份 MATCH 且仍存活；
+          2. 进程监控可重建（运行表登记 + 日志文件锚点）；
+          3. 日志采集可恢复（日志文件存在可读 + 可靠文件尾续读）；
+          4. 停止能力经安全验证（safe_kill 身份核验路径，不真的杀）。
+        全过 -> (True, note)；任一不过 -> (False, note)。不做模糊认领。
+        """
+        # 1) 身份核验：必须是"同一进程"才谈接管。
+        if not identity_mod.verify_identity(run, run.pid):
+            return False, "身份核验失败(PID/创建时刻不匹配)，拒绝接管"
+        # 2) 监控可重建：运行表目前不能登记 -> 恢复流程负责登记，故只要 log 锚点可写即可。
+        if not run.log_path:
+            return False, "缺少日志文件锚点，无法重建监控"
+        # 3) 日志采集可恢复：日志文件存在且可读。
+        if not os.path.isfile(run.log_path):
+            return False, "日志文件不存在，无法恢复采集"
+        try:
+            with open(run.log_path, "a", encoding="utf-8", errors="replace"):
+                pass
+        except OSError as e:
+            return False, f"日志文件不可追加，无法恢复采集: {e}"
+        # 4) 停止能力安全验证：先核验身份；身份能证明才允许后续停止，不真的终止。
+        if not identity_mod.verify_identity(run, run.pid):
+            return False, "停止能力未通过身份核验，拒绝接管"
+        return True, "四问全过"
+
+    def recover_on_start(self):
+        """服务(重新)启动时扫描遗留下来的运行态，做安全收敛与认领。
+
+        处理对象：数据库里 status 属于 (STARTING, RUNNING, ORPHANED, UNKNOWN) 的记录。
+        逐条：
+          - 若具备有效身份凭据(process_create_time)且 OS 探针确认存活：
+              + 该进程属于本节点的管理范围 -> 作业恢复为 RUNNING/ORPHANED 并继续管理。
+              + detach 后台进程 -> 触发四问认领，能确认则标记 RUNNING(adopted)。
+          - 若已死亡：按记录里的身份凭据核对；进程确已不在 -> 判定为中断/异常结束。
+              + 曾标记 detach 且工具管理的进程异常结束 -> INTERRUPTED。
+              + 其它自然收敛但未记录 exit_code 的 -> 归入历史(INTERRUPTED，原因=重启时确认已死)。
+          - 残留 STARTING（spawn 前崩溃，没有任何身份凭据）：
+              + 无法证明它当年曾拉起过任何进程 -> 保留 UNKNOWN 待核查，绝不盲杀。
+        SAFE-FIRST：绝不自动重启、绝不模糊认领、绝不盲目 kill。无法证明归属一律按待核查处理。
+        """
+        candidates = self.store.running_runs()
+        for run in candidates:
+            try:
+                self._recover_one(run)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"恢复 run[{run.id}] 时异常: {e}")
+
+    def _recover_one(self, run: Run):
+        # 1) 无有效身份凭据（如残留 STARTING / Phase-1 遗留 RUNNING）：
+        #    STARTING：spawn 前崩溃，从未建立 run_id<->进程 绑定 -> 保留 UNKNOWN，绝不盲杀。
+        #    RUNNING(Phase-1 遗留, 无 process_create_time)：身份缺失 -> 保守 UNKNOWN。
+        if not run.process_create_time:
+            if run.status == "STARTING":
+                # STARTING 表示只有"启动意图"，没有可靠的 run_id->进程 关联。
+                # 一律不按模糊匹配认领进程；转到 UNKNOWN 待人工/运维核查。
+                run.status = "UNKNOWN"
+                run.interrupted_reason = ("残留 STARTING 预登记，无有效身份凭据；"
+                                          "启动意图已保存，无法认领具体进程，转待核查")
+            elif run.status in ("RUNNING", "ORPHANED", "UNKNOWN"):
+                # 无身份凭据的历史遗留 RUNNING -> 保守进入 UNKNOWN，不做任何处置。
+                run.status = "UNKNOWN"
+                run.interrupted_reason = ("Phase-1 遗留：缺少进程身份凭据(create_time)，"
+                                          "无法安全核验，转待核查")
+            self.store.save_run(run)
+            return
+
+        # 2) 具备身份凭据：用 OS 探针确认该进程目前是否存活/可复核
+        alive = identity_mod.process_is_alive(run, run.pid)
+        if alive:
+            run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
+            if run.status in ("STARTING",):
+                # spawn 后崩溃残留：身份已建立且仍存活 -> 恢复到 RUNNING（同一凭据才可恢复）
+                run.status = "RUNNING"
+                run.interrupted_reason = ""
+                self.store.save_run(run)
+                logger.info(f"恢复 run[{run.id}] 存活 -> RUNNING")
+                return
+            if run.status == "UNKNOWN":
+                # 待核查中进程仍存活且身份匹配 -> 恢复为 ORPHANED（继续管理，但不假成功）
+                run.status = "ORPHANED"
+                run.interrupted_reason = ("重启恢复：进程存活且身份匹配，转孤儿管理，"
+                                          "待接管核查")
+                self.store.save_run(run)
+                logger.info(f"恢复 run[{run.id}] 存活 & 身份匹配 -> ORPHANED")
+                return
+            if run.status == "ORPHANED":
+                # detach 存活孤儿 -> 走「四问接管」：身份/监控/日志/停止 全通过才重建 RUNNING。
+                adopted, note = self._adopt_orphan(run)
+                run.adopted = adopted
+                if adopted:
+                    run.status = "RUNNING"
+                    run.interrupted_reason = ""
+                else:
+                    run.interrupted_reason = (run.interrupted_reason or
+                                              "四问接管未全过: " + note)
+                self.store.save_run(run)
+                logger.info(f"恢复 run[{run.id}] ORPHANED -> {'RUNNING(接管)' if adopted else '保持ORPHANED'} {note}")
+                return
+            # RUNNING 且存活：维持原态（管理恢复）
+            self.store.save_run(run)
+            logger.info(f"恢复 run[{run.id}] RUNNING 存活 -> 保持")
+            return
+
+        # 3) 进程已不存活（OS 探针确认）。
+        #    STARTING 且死：曾经 spawn 过但从未登记成功 -> 属于异常中断窗口内结束。
+        #    有身份的 RUNNING/ORPHANED 死亡：确认异常/normal 结束，归入历史 INTERRUPTED。
+        if run.status == "INTERRUPTED":
+            return
+        run.status = "INTERRUPTED"
+        run.interrupted_reason = run.interrupted_reason or (
+            "重启恢复：进程已确认不在运行（OS 探针核验），标记为中断并归入历史")
+        run.end = run.end or datetime.now().astimezone().isoformat(timespec="seconds")
+        run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
+        self.store.save_run(run)
+        logger.info(f"恢复 run[{run.id}] 已确认结束 -> INTERRUPTED")
+
+    # ---------- Phase 2 · 心跳 / 异常核查循环 ----------
+    def _heartbeat_loop(self):
+        """后台心跳循环：周期刷新存活运行的管理态心跳；超时者触发 OS 核查。"""
+        while not self._heartbeat_stop:
+            try:
+                self._heartbeat_tick()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"心跳 tick 异常: {e}")
+            for _ in range(self.heartbeat_interval):
+                if self._heartbeat_stop:
+                    return
+                time.sleep(1)
+
+    def _heartbeat_tick(self):
+        """周期性在管理态的活跃运行上打心跳，并对连续超时的触发 OS 核查.
+
+        重要：心跳只反映"管理链路活性"。真正判定死亡必须 OS 探针(pid+身份凭据)。
+        单次未刷新心跳绝不直接判死；连续超时也只是"进入需要 OS 核查"的候选，
+        最终以探针结果为准。
+        """
+        runs = self.store.running_runs()
+        # 只对"确认在管理/存活"的状态打心跳；UNKNOWN/INTERRUPTED 不纳入心跳刷新
+        managed = [r for r in runs
+                   if r.status in ("RUNNING", "ORPHANED", "STARTING")]
+        now_s = datetime.now().astimezone().isoformat(timespec="seconds")
+        timeout_sec = self.heartbeat_interval * _heartbeat_timeout_times()
+
+        for r in managed:
+            # 打心跳：只是把管理链路活性写盘（合并写，防写放大）
+            r.last_heartbeat = now_s
+            self.store.save_run(r, heartbeat_only=True)
+            # 超时核查：距上次心跳超过阈值 -> 必须用 OS 探针确认进程是否真的死了
+            hb = r.last_heartbeat or r.start
+            if not self._within_timeout(hb, timeout_sec):
+                self._check_heartbeat_timeout(r)
+
+    @staticmethod
+    def _within_timeout(ts, timeout_sec: float) -> bool:
+        try:
+            from datetime import datetime as _dt
+            t = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+            return (datetime.now().astimezone() - t).total_seconds() <= timeout_sec
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _check_heartbeat_timeout(self, run: Run):
+        """心跳连续超时 -> 用 OS 探针复核该进程是否真死.
+
+        唯一死亡权威是 OS 探针；若探针仍确认存活（身份匹配），仅刷新心跳不判死。
+        若探针确认已不在，则标记为 INTERRUPTED 并归入历史（管理链路与 OS 一致才算真死）。
+        """
+        if identity_mod.process_is_alive(run, run.pid):
+            # 探针确认仍存活：只是管理链路心跳被合并写/网络暂停，不判死
+            run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
+            self.store.save_run(run, heartbeat_only=True)
+            return
+        # 探针确认进程已不在运行 -> 明确中断
+        if run.status == "INTERRUPTED":
+            return
+        run.status = "INTERRUPTED"
+        run.interrupted_reason = (run.interrupted_reason or
+                                  "心跳连续超时且 OS 探针确认进程已不在运行，判定中断")
+        run.end = run.end or datetime.now().astimezone().isoformat(timespec="seconds")
+        self.store.save_run(run)
+        logger.warning(f"心跳超时 + OS 探针确认死亡: run[{run.id}] -> INTERRUPTED")
 
     # ---------- 对外 API ----------
     def trigger(self, job_name: str):
@@ -383,12 +627,14 @@ class Scheduler:
         return True
 
     def stop(self, run_id: str) -> dict:
-        """停止一个以 detach 方式启动的后台进程（按记录的 PID 定向 kill）.
+        """停止一个以 detach 方式启动的后台进程（身份核验后安全停止）.
 
-        返回 dict：{ok, stop, run}，方便前端给出明确提示。
+        返回 dict：{ok, stop, run, reason}，方便前端给出明确提示。
         与 abort() 的关键区别：这里不依赖内存中的 Popen 引用，而是从数据库
-        读取该 run 存储的 PID，用 taskkill /PID 精准终止——即使调度中心曾重启、
-        进程已脱离运行表，也能兜底清掉孤儿后台进程。
+        读取该 run 存储的 PID 与身份凭据，先复核"该 PID 确实就是当初那个进程"，
+        再定向 kill——即使调度中心曾重启、进程已脱离运行表，也能安全清掉孤儿后台进程。
+
+        身份核验失败（PID 复用/无凭据）时拒绝操作，绝不盲杀；无法证明归属一律视为失败。
         """
         run = self.store.get_run(run_id)
         if run is None:
@@ -396,13 +642,17 @@ class Scheduler:
         pid = getattr(run, "pid", None)
         if not pid:
             return {"ok": True, "stop": False, "reason": "no_pid"}
-        # 先登记"用户主动停止"，必须在 kill 之前：kill 后读线程会立刻把退出码 1
-        # 覆盖成 FAILED 并从 running 移除，若此时才标记就拦不住。
+        # Phase 2 · 安全停止：安全停止优先调用身份核验后的 safe_kill（默认安全优先）。
+        # 失败原因统一反馈，不因"进程已不存在"假成功。
+        reason = identity_mod.safe_kill(run, pid, group_id=run.process_group_id)
+        if reason is not None:
+            # 若是进程早已不在，属于正常停止；否则核验失败拒绝
+            if identity_mod.process_is_alive(run, pid):
+                return {"ok": False, "stop": False, "pid": pid, "reason": reason}
+            # 进程已不存在 -> 目标"让它停"已达成
+            reason = None
+        # 已登记用户主动停止：读线程不得用退出码覆盖状态栏
         self.executor.mark_user_stopped(run.id)
-        ok = self.executor.kill_by_pid(pid)
-        # 只要进程已停（本次杀死 / 之前已不存在），都视为停止成功，并把仍在运行的 run 标记为 KILLED
-        if not ok:
-            return {"ok": True, "stop": False, "pid": pid, "reason": "kill_failed"}
         with self._lock:
             in_running = run.id in self.running
         if in_running:
@@ -684,21 +934,33 @@ class Scheduler:
     def running_view(self, *, job_type: Optional[str] = None, q: Optional[str] = None,
                      sort: Optional[str] = None, order: str = "desc",
                      offset: int = 0, limit: int = 100) -> dict:
-        with self._lock:
-            runs = list(self.running.values())
+        """执行中/待核查视图（Phase 2）.
+
+        数据源为 store.running_runs()：包含 STARTING / RUNNING / ORPHANED /
+        UNKNOWN 分组（这些状态留在"运行/执行中"区展示；INTERRUPTED 归入历史）。
+        附带 alive_total（== running_process_count，仅统计已确认存活或管理中的
+        状态，UNKNOWN 不计）与按 status 的分组 counts。
+        """
+        runs = list(self.store.running_runs())
         if job_type:
             runs = [r for r in runs if r.job_type.upper() == job_type.upper()]
         if q:
             lq = q.lower()
             runs = [r for r in runs if lq in r.job_name.lower()]
-        # 排序：默认按开始时间倒序（新启动的在最前）
         field = sort if sort in ("start", "name_created", "name") else "start"
         attr = {"start": "start", "name": "job_name"}.get(field, "start")
         runs.sort(key=lambda r: self._sort_key(r, attr), reverse=(order != "asc"))
         total = len(runs)
-        # 运行中通常无分页，但保持与历史一致返回 total/items
         sliced = runs[offset:offset + limit]
-        return {"total": total, "items": [r.to_dict(include_log=True) for r in sliced]}
+        counts: Dict[str, int] = {}
+        for r in runs:
+            counts[r.status] = counts.get(r.status, 0) + 1
+        return {
+            "total": total,
+            "items": [r.to_dict(include_log=True) for r in sliced],
+            "alive_total": self.store.running_process_count(),
+            "counts": counts,
+        }
 
     def history_view(self, status: Optional[str] = None, job_name: Optional[str] = None,
                      job_type: Optional[str] = None, q: Optional[str] = None,

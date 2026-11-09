@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch, computed } from 'vue'
 import { fetchRunning, abortRun } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel, dict } from '../constants'
 import { refreshTick, bump } from '../store/refresh'
@@ -9,6 +9,8 @@ import AutoTablePanel from '../components/AutoTablePanel.vue'
 
 const runs = ref([])
 const total = ref(0)
+const aliveTotal = ref(0)
+const counts = ref({})
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
@@ -38,10 +40,23 @@ async function load() {
     const res = await fetchRunning(params)
     runs.value = res.items || []
     total.value = res.total || 0
+    aliveTotal.value = res.alive_total ?? 0
+    counts.value = res.counts || {}
   } finally {
     loading.value = false
   }
 }
+
+// Phase 2 · 执行中心分桶统计：正常/待处理(ORPHANED)/待核查(UNKNOWN+STARTING)
+const stats = computed(() => {
+  const c = counts.value || {}
+  return {
+    running: c.RUNNING || 0,
+    orphaned: c.ORPHANED || 0,
+    pending: (c.UNKNOWN || 0) + (c.STARTING || 0),
+    aliveTotal: aliveTotal.value,
+  }
+})
 
 // 条件变化自动刷新：下拉立即、名称 300ms 去抖
 let qTimer = null
@@ -63,6 +78,16 @@ async function onAbort(run) {
   }
 }
 function open(run) { openRun(run.id) }
+
+// Phase 2 · 状态角标样式归类（都走 constants 翻译，样式按状态分组）
+const STATUS_CLASS = {
+  RUNNING: 'RUNNING',
+  STARTING: 'STARTING',
+  ORPHANED: 'ORPHANED',
+  UNKNOWN: 'UNKNOWN',
+  INTERRUPTED: 'INTERRUPTED',
+}
+function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
 </script>
 
 <template>
@@ -79,6 +104,26 @@ function open(run) { openRun(run.id) }
           <el-input v-model="qFilter" placeholder="搜索…" clearable style="width:200px" />
         </el-form-item>
       </el-form>
+    </el-card>
+
+    <!-- Phase 2 · 分桶汇总：正常运行 / 待处理(ORPHANED) / 待核查(UNKNOWN+STARTING) -->
+    <el-card shadow="never" class="statbar">
+      <div class="stat">
+        <span class="stat-num">{{ stats.running }}</span>
+        <span class="stat-label">正常运行</span>
+      </div>
+      <div class="stat stat-orphan">
+        <span class="stat-num">{{ stats.orphaned }}</span>
+        <span class="stat-label">待处理</span>
+      </div>
+      <div class="stat stat-unknown">
+        <span class="stat-num">{{ stats.pending }}</span>
+        <span class="stat-label">待核查</span>
+      </div>
+      <div class="stat stat-alive">
+        <span class="stat-num">{{ stats.aliveTotal }}</span>
+        <span class="stat-label">实际运行进程数</span>
+      </div>
     </el-card>
 
     <!-- 数据表：AutoTablePanel 统一处理高度/行高铺满/分页 -->
@@ -101,8 +146,10 @@ function open(run) { openRun(run.id) }
         <el-table-column prop="start" label="开始时间" min-width="150" sortable="custom" align="center">
           <template #default="{ row }">{{ (row.start || '').replace('T',' ').slice(5,19) }}</template>
         </el-table-column>
-        <el-table-column label="状态" min-width="110" align="center">
-          <template #default="{ row }"><span class="badge RUNNING">进行中</span></template>
+        <el-table-column label="状态" min-width="120" align="center">
+          <template #default="{ row }">
+            <span class="badge" :class="statusClass(row.status)">{{ statusLabel(row.status) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="操作" fixed="right" width="150" align="center">
           <template #default="{ row }">
@@ -121,4 +168,11 @@ function open(run) { openRun(run.id) }
 .toolbar :deep(.el-form-item) { margin-bottom: 0; }
 .toolbar :deep(.el-form--inline) { flex-wrap: wrap; row-gap: 12px; }
 .ops { display: flex; align-items: center; gap: 6px; }
+.statbar { display: flex; gap: 24px; flex-wrap: wrap; }
+.stat { display: flex; align-items: baseline; gap: 8px; }
+.stat-num { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-label { color: var(--el-text-color-secondary); font-size: 13px; }
+.stat-orphan .stat-num { color: #D69A4B; }
+.stat-unknown .stat-num { color: #909399; text-decoration: line-through; }
+.stat-alive .stat-num { color: #6C9CFF; }
 </style>

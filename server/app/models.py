@@ -232,11 +232,36 @@ class Run:
     log: List[str] = field(default_factory=list)  # 按行追加（进程 stdout+stderr）
     log_path: Optional[str] = None               # 完整日志文件（可选，超大输出回退/全量查看）
     error: str = ""
+    # ---- Phase 2 状态一致性与异常恢复 · 进程身份/心跳字段 ----
+    # 身份凭据（关键）：用于把「一次 run」与「一个真实 OS 进程」绑定，跨重启可复核。
+    node_id: str = ""                      # 归属节点标识（本机默认 slot 名）
+    process_create_time: Optional[str] = None  # 进程创建时刻。Windows=GetProcessTimes FILETIME；Linux=/proc/<pid>/stat(22)
+    executable_path: Optional[str] = None      # 可执行文件绝对路径（辅助佐证，mismatch 仅告警不阻断）
+    command_line_fingerprint: Optional[str] = None  # 命令行为指纹（辅助佐证）
+    process_group_id: Optional[int] = None         # 真实进程组/进程树根 (Windows: 树根 pid | Linux: 实际 PGID)
+    detached: bool = False                    # True=detach 独立常驻；False=session 内进程
+    # 心跳（管理链路活性指示，绝不单独作为“进程是否死亡”的判定依据）
+    last_heartbeat: Optional[str] = None      # 最近一次批量心跳落库时间(ISO)
+    # 中断/异常元信息（INTERRUPTED / ORPHANED / UNKNOWN 时承载）
+    interrupted_reason: str = ""              # 异常中断原因（含检查时间）
+    adopted: bool = False                     # 是否由恢复流程接管确认存活（detach 四问）
+    # SAFE-FIRST（§8.2）：本轮只预留、不生效。绝不做幂等自动重试——
+    # 异常任务一律保持终态，由管理员显式 trigger 手动重触发。
+    retryable: bool = False
 
     def __post_init__(self):
         self.status = _as_run_state(self.status)
         self.trigger = str(self.trigger).strip().upper()
         self.job_type = _as_job_type(self.job_type)
+        if self.pid is not None:
+            self.pid = int(self.pid)
+        if self.timeout_s is not None:
+            self.timeout_s = int(self.timeout_s)
+        if self.process_group_id is not None:
+            self.process_group_id = int(self.process_group_id)
+        self.detached = bool(self.detached)
+        self.adopted = bool(self.adopted)
+        self.retryable = bool(self.retryable)
 
     @property
     def duration_ms(self) -> Optional[int]:
@@ -280,6 +305,17 @@ class Run:
             "duration_ms": self.duration_ms,
             "log_path": self.log_path,
             "error": self.error,
+            # ---- Phase 2 身份/心跳字段（与 dataclass 一一对应，显式序列化）----
+            "node_id": self.node_id,
+            "process_create_time": self.process_create_time,
+            "executable_path": self.executable_path,
+            "command_line_fingerprint": self.command_line_fingerprint,
+            "process_group_id": self.process_group_id,
+            "detached": self.detached,
+            "last_heartbeat": self.last_heartbeat,
+            "interrupted_reason": self.interrupted_reason,
+            "adopted": self.adopted,
+            "retryable": self.retryable,
         }
         if include_log:
             d["log"] = self.log

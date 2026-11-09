@@ -11,13 +11,22 @@
 """
 
 # ---- 任务执行状态 (Run.status) ----
+# Phase 2 状态一致性与异常恢复新增：
+#   STARTING    预登记态：run_id 已生成、身份尚未落入，进程拉起/登记中（spawn→落库的异常窗口）
+#   INTERRUPTED 已确认任务异常中断/异常终止（记录中断原因与检查时间）
+#   ORPHANED    进程仍存活，但已失去有效管理关系（无论 detach 与否）
+#   UNKNOWN     进程身份或实际状态无法可靠确定（不代表已确认存活，不计入正常运行数量）
 STATUS = {
     "PENDING": "待开始",
+    "STARTING": "预登记中",
     "RUNNING": "进行中",
     "SUCCEEDED": "已完成",
     "FAILED": "失败",
     "TIMEDOUT": "已超时",
     "KILLED": "已中止",
+    "INTERRUPTED": "已中断",
+    "ORPHANED": "孤儿",
+    "UNKNOWN": "待核查",
 }
 
 # ---- 任务类型 (Job.type)，菜单里的「菜」 ----
