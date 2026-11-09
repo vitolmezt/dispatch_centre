@@ -239,9 +239,21 @@ class Executor:
             # （否则 taskkill 强杀的退出码 1 会把"主动停止"误标为 FAILED）
             was_user_stopped = run.id in self._user_stopped
             if run.status not in ("KILLED", "TIMEDOUT") and not was_user_stopped:
-                run.status = "SUCCEEDED" if proc.returncode == 0 else "FAILED"
-                if proc.returncode != 0:
-                    run.error = f"退出码 {proc.returncode}"
+                # 身份复核：收尾时以 OS 探针确认该进程确实已不在运行（pid 已回收，
+                # 或创建时刻不再匹配）。避免"进程仍在跑、只是读线程误判"的竞态。
+                self._verify_exit_was_external(run)
+                if proc.returncode == 0:
+                    run.status = "SUCCEEDED"
+                    run.error = ""
+                else:
+                    # 选项A：未登记用户停止 + 非0退出 -> 一律 INTERRUPTED，
+                    # 语义为"非正常终止"，不武断归 FAILED；原因写清以便排查。
+                    run.status = "INTERRUPTED"
+                    run.interrupted_reason = (
+                        f"进程非 0 退出（exit={proc.returncode}）且非调度中心主动停止，"
+                        f"已判定为外部终止/异常退出"
+                    )
+                    run.error = f"退出码 {proc.returncode}（外部终止或异常退出）"
         except FileNotFoundError as e:
             run.status = "FAILED"
             run.error = f"找不到可执行目标: {e}"
@@ -279,6 +291,20 @@ class Executor:
         run.status = "TIMEDOUT"
         run.error = f"执行超过 {run.timeout_s} 秒，已中止"
         self._kill_proc(proc)
+
+    def _verify_exit_was_external(self, run: Run):
+        """读线程收尾时的身份/存活复核：确认进程确实已退出（仅在内部执行，不写任务日志）.
+
+        刚 proc.wait() 返回时进程通常已消失；此复核用于规避极端竞态：进程仍在跑、
+        或 PID 被新进程复用。复核结果不写入任务日志流，避免把内部系统噪声混进
+        用户看到的任务输出（保留给用户干净的真实输出）。
+        """
+        try:
+            if not run.pid:
+                return
+            identity_mod.process_is_alive(run, run.pid)
+        except Exception:  # noqa: BLE001
+            pass
 
     @staticmethod
     def kill_by_pid(pid) -> bool:

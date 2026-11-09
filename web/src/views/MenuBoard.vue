@@ -261,6 +261,13 @@ watch(refreshTick, () => load())
             <span :class="['toggle', row.enabled ? 'on' : 'off']">{{ enabledLabel(row.enabled) }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="执行方式" min-width="100">
+          <template #default="{ row }">
+            <!-- 是否定时：有 schedule 即定时；cron 具体等看任务详情 -->
+            <span v-if="row.schedule" :class="['badge', row.enabled ? 'RUNNING' : '']">定时</span>
+            <span v-else class="badge NEUTRAL">手动</span>
+          </template>
+        </el-table-column>
         <el-table-column label="当前状态" min-width="80">
           <template #default="{ row }">
             <span v-if="row.running_count > 0" class="badge RUNNING">进行中</span>

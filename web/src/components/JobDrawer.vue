@@ -1,26 +1,23 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { jobTypeLabel, statusLabel } from '../constants'
+import { jobTypeLabel, statusLabel, cronToHuman } from '../constants'
 import { fetchHistory } from '../api'
 
-/**
- * 全局右侧抽屉（约半屏）：展示一个菜单项的
- *  1. 基础信息（name / 描述 / 类型 / enabled）
- *  2. 执行内容（params 按类型驱动展示）
- *  3. 配置信息（schedule / timeout / enabled）
- *  4. 执行经历（该任务最近几次历史）
- * 纵向从上到下表格布局，仿管理系统风格。
- * 触发按钮在「任务列表」表格内已有，这里不再放执行按钮。
- */
 
 const props = defineProps({
-  id: String,                 // 当前选中任务名
+  id: String,
   jobs: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['close'])
 
 const open = computed(() => !!props.id)
 const job = computed(() => props.jobs.find(j => j.name === props.id) || null)
+
+const scheduleDesc = computed(() => {
+  const sc = job.value?.schedule
+  if (!sc) return ''
+  return cronToHuman(sc) || ''
+})
 
 const recentRuns = ref([])
 
@@ -42,7 +39,6 @@ async function loadHistory() {
   }
 }
 
-// 打开抽屉时加载该任务最近执行记录
 onMounted(() => { if (open.value) loadHistory() })
 watch(() => props.id, (v) => { if (v) loadHistory() })
 </script>
@@ -98,6 +94,7 @@ watch(() => props.id, (v) => { if (v) loadHistory() })
           <h4 class="fn-sec">配置信息</h4>
           <div class="kv">
             <div class="kv-row"><label>定时</label><span class="mono">{{ job.schedule || '手动' }}</span></div>
+            <div v-if="scheduleDesc" class="kv-row sched-desc"><label>周期</label><span>{{ scheduleDesc }}</span></div>
             <div class="kv-row"><label>超时</label><span class="mono">{{ job.timeout_s ? job.timeout_s + ' 秒' : '不限' }}</span></div>
           </div>
         </section>
@@ -139,6 +136,7 @@ section { display: flex; flex-direction: column; gap: 8px; }
   color: var(--muted); font-size: 13px; background: var(--panel-2);
 }
 .kv-row span { padding: 9px 12px; font-size: 13px; word-break: break-all; }
+.sched-desc span { color: #3fbf82; font-weight: 600; }
 .runs { display: flex; flex-direction: column; gap: 6px; }
 .run-row {
   display: flex; align-items: center; gap: 10px;

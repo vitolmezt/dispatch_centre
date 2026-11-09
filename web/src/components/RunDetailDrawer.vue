@@ -153,11 +153,13 @@ onBeforeUnmount(() => {
       </template>
 
       <div v-if="run" class="d-body">
-        <!-- 元信息网格 -->
+        <!-- 元信息网格：多列对齐；短字段保短，长字段(可执行文件/目录等)截断省略，
+        鼠标悬停用 title 显示完整内容（同任务列表描述交互） -->
         <div class="meta">
-          <template v-for="m in metaItems" :key="m.label">
-            <div class="m-item"><label>{{ m.label }}</label><span class="mono">{{ m.value }}</span></div>
-          </template>
+          <div v-for="m in metaItems" :key="m.label" class="m-item" :title="m.value">
+            <label>{{ m.label }}</label>
+            <span class="mono">{{ m.value }}</span>
+          </div>
         </div>
 
         <!-- Phase 2 · 异常状态搁置原因：ORPHANED / UNKNOWN / INTERRUPTED 时醒目提示 -->
@@ -197,10 +199,10 @@ onBeforeUnmount(() => {
   padding: 1px 8px; border-radius: 10px;
 }
 .live-tag.off { color: var(--muted); background: rgba(127,132,145,.12); }
-.meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 20px; }
-.m-item { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 6px 20px; }
+.m-item { display: flex; flex-direction: column; gap: 3px; padding: 4px 0; min-width: 0; }
 .m-item label { font-size: 12px; color: var(--muted); }
-.m-item span { font-size: 13px; word-break: break-all; }
+.m-item span { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .intr-flag {
   display: flex; align-items: flex-start; gap: 10px;
   background: rgba(214, 74, 69, .10); border: 1px solid rgba(214, 74, 69, .35);

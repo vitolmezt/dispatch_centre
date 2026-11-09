@@ -1,6 +1,6 @@
 <script setup>
 import { ref, reactive, computed, watch } from 'vue'
-import { dict } from '../constants'
+import { dict, cronToHuman } from '../constants'
 import { pickPath } from '../api'
 import { toast } from '../store/toast'
 
@@ -73,6 +73,30 @@ if (props.initial) {
 }
 
 const currentSchema = computed(() => props.schemas?.schemas?.[form.type]?.fields || [])
+
+// 定时 cron 的中文说明：能翻译则显示，否则留空
+const scheduleDesc = computed(() => {
+  if (!form.schedule) return ''
+  return cronToHuman(form.schedule) || ''
+})
+
+// el-autocomplete 建议：返回常用 cron 预设 + （必要时）"沿用当前输入"项
+function queryCronSuggestions(queryString, cb) {
+  const q = (queryString || '').trim().toLowerCase()
+  let list = SCHEDULE_PRESETS
+    .filter(p => p.value)                      // 排除"不自动"空项
+    .map(p => ({ value: p.value, label: p.label, cron: p.value }))
+  if (q) {
+    list = list.filter(i => i.cron.includes(q) || i.label.includes(q))
+  }
+  // 当前输入不是某个预设原样时，追加一项"沿用输入"，让用户可回车保留自由值
+  if (q && !list.some(i => i.cron === q)) {
+    list.push({ value: q, label: `使用：${q}`, cron: q })
+  } else if (!q) {
+    // 输入为空：仍给出预设供选择
+  }
+  cb(list)
+}
 
 // 路径选择：后端点系统原生对话框；actingKey 记录正在请求的字段名（按钮 loading）
 const actingKey = ref(null)
@@ -205,32 +229,36 @@ function onCancel() {
       </el-row>
     </div>
 
-    <!-- ③ 调度配置（仅定时/超时；启用为任务总开关，放在底部） -->
     <div class="fn-fhead">调度配置</div>
     <div class="form-card">
-      <div class="schedule-row">
-        <!-- 定时 弹性占满剩余宽度；显式固定 label-width，避开 flex 容器下继承失效 -->
-        <div class="field cron-field">
-          <el-form-item :label-width="labelW" label="定时">
-            <el-select v-model="form.schedule" filterable allow-create clearable
-                       :disabled="readonly"
-                       default-first-option placeholder="点击选择或输入，如 */5 * * * *">
-              <el-option v-for="p in SCHEDULE_PRESETS" :key="p.value"
-                         :value="p.value" :label="p.label">
-                <span>{{ p.label }}</span>
-                <span v-if="p.value" class="cron-monospace">{{ p.value }}</span>
-              </el-option>
-            </el-select>
+      <el-row :gutter="16">
+        <el-col :span="24" class="inline-col">
+          <el-form-item label="定时">
+            <div class="cron-line">
+              <el-autocomplete v-model="form.schedule"
+                               :fetch-suggestions="queryCronSuggestions"
+                               :trigger-on-focus="true"
+                               clearable
+                               :disabled="readonly"
+                               placeholder="点击选择或输入，如 */5 * * * *">
+                <template #default="{ item }">
+                  <div class="ac-item">
+                    <span>{{ item.label }}</span>
+                    <span v-if="item.cron" class="cron-monospace">{{ item.cron }}</span>
+                  </div>
+                </template>
+              </el-autocomplete>
+              <div v-if="scheduleDesc" class="schedule-desc">{{ scheduleDesc }}</div>
+            </div>
           </el-form-item>
-        </div>
-        <!-- 超时固定窄列（标签居左，标签用紧凑宽度，保证数字组件不被挤压坍缩） -->
-        <div class="field timeout-field">
+        </el-col>
+        <el-col :span="24" class="inline-col">
           <el-form-item label="超时(秒)">
             <el-input-number v-model.number="form.timeout_s" :min="0" :disabled="readonly" class="timeout-input"
-                             style="width:100%" placeholder="0=不限" />
+                             placeholder="0=不限" />
           </el-form-item>
-        </div>
-      </div>
+        </el-col>
+      </el-row>
     </div>
 
     <!-- ④ 任务总开关 -->
@@ -348,25 +376,35 @@ function onCancel() {
   display: inline-flex; align-items: center; justify-content: center;
 }
 
-/* 调度配置一行：Cron 弹性占宽，超时固定宽度互不挤占 */
-.schedule-row { display: flex; gap: 24px; align-items: flex-end; }
-.schedule-row .cron-field { flex: 1 1 auto; min-width: 0; }
-.schedule-row .timeout-field { flex: 0 0 240px; min-width: 240px; }
-.schedule-row .field { max-width: 100%; }
+/* 调度配置：与其它卡片统一的 el-form-item 间距；定时行内说明在框右侧同一行 */
+.cron-line { display: flex; align-items: center; gap: 16px; min-width: 0; }
+/* 定时框与超时框同宽：el-autocomplete 是碎片化根节点，
+   需直接作用于其内部的输入框本体（.el-input）而非仅组件 class */
+.cron-line .el-autocomplete,
+.cron-line .el-autocomplete .el-input,
+.cron-line .el-autocomplete .el-input__wrapper { width: 340px !important; max-width: 100%; }
+/* 周期说明固定不换行、不被挤压 */
+.schedule-desc { flex: 0 0 auto; }
 
 /* 定时下拉：选项里中文说明 + 右侧等宽 cron 表达式 */
+.ac-item { display: flex; align-items: center; justify-content: space-between; gap: 24px; width: 100%; }
 .cron-monospace {
-  float: right; margin-left: 24px; font-family: Consolas, monospace;
+  font-family: Consolas, monospace;
   font-size: 12px; color: var(--muted, #888);
 }
 
-/* 超时数字组件：约束在区块内不溢出，加减按钮留足内边距防裁切 */
-.timeout-input { width: 100% !important; min-width: 120px; box-sizing: border-box; }
+/* 定时中文说明：与定时框同一行右侧，提示大概什么时候跑；字号与左侧标签一致(13px) */
+.schedule-desc {
+  color: var(--primary, #4a9eff);
+  font-size: 13px; white-space: nowrap; font-weight: 600;
+}
+
+/* 超时数字组件：与定时框同宽；约束在区块内不溢出 */
+.timeout-input { width: 340px !important; max-width: 100%; min-width: 120px; box-sizing: border-box; }
 .timeout-input .el-input__wrapper { box-sizing: border-box; }
 .timeout-input .el-input-number__increase,
 .timeout-input .el-input-number__decrease { padding: 0 6px; width: auto; }
 .timeout-input .el-input__inner { text-align: left; padding-right: 44px; }
 
-/* 开关卡片（启用）：开关与标签同行（与"进程独立"一致），不再需要顶部标签留白 */
-.switch-card { padding-top: 4px; }
+/* 开关卡片（启用）：与其它卡片统一的标准内边距，保持各卡片上边距一致 */
 </style>

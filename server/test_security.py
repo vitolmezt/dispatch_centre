@@ -230,6 +230,35 @@ def test_script_program_outside_exec_root(client):
     print("[OK] COMMAND 不受路径白名单限制")
 
 
+def test_nonzero_exit_interrupted(client):
+    """选项A：未登记用户停止 + 非0退出 -> INTERRUPTED（外部/异常终止），而非 FAILED."""
+    from app.executor import Executor
+
+    class FakeRunner:
+        def on_started(self, run): pass
+        def on_log(self, run, line): run.append_log(line)
+        def on_finished(self, run): pass
+
+    ex = Executor(FakeRunner())
+    # 一个必然非0退出的命令（Linux/mac 下 shell 会以 1 退出；Windows cmd 同样非0）
+    if os.name == "nt":
+        cmd = "exit /b 3"
+        script_path = None
+    else:
+        cmd = "exit 3"
+        script_path = None
+    r = Run(id="nz1", job_name="t", job_type="COMMAND", status="PENDING")
+    ex.run(r, Job.from_dict({"name": "t", "type": "COMMAND",
+                             "params": {"command": cmd}}))
+    assert r.exit_code != 0, r.exit_code
+    assert r.status == "INTERRUPTED", (r.status, r.error)
+    assert "退出码" in r.error and r.error.startswith(f"退出码 {r.exit_code}"), r.error
+    assert "外部终止或异常退出" in r.error, r.error
+    # 复核在内部执行，不写入任务日志流：用户日志保持干净（仅真实输出）
+    assert not any("[identity]" in ln for ln in (r.log or [])), r.log
+    print(f"[OK] 非0退出 -> INTERRUPTED (exit={r.exit_code}), 用户日志保持干净")
+
+
 def test_fs_pick_no_switch_authed(client):
     """执行权限调整后：fs/pick 无需开关，已认证即可访问；未认证仍 401."""
     from app import main as main_mod
@@ -352,6 +381,7 @@ def main():
         test_dangerous_endpoint_protection,
         test_fileop_anywhere,
         test_script_program_outside_exec_root,
+        test_nonzero_exit_interrupted,
         test_login_throttle,
         test_fs_pick_no_switch_authed,
         test_sse_unauthorized,
