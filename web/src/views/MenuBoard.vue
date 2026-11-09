@@ -243,6 +243,7 @@ watch(refreshTick, () => load())
     <!-- 任务列表主体：AutoTablePanel 统一处理高度/行高铺满/分页 -->
     <AutoTablePanel :data="items" :loading="loading" stripe fill="10"
                     :page="page" :total="total" :page-size="pageSize"
+                    @change="p => { page = p; load() }"
                     @sort-change="onSortChange" @row-click="openView"
                     :empty-text="loading ? '加载中…' : '没有匹配的任务，换个搜索条件试试'"
                     class="job-table">
