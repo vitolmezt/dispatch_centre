@@ -61,6 +61,13 @@ export async function fetchRun(runId) {
   return data
 }
 
+/** 批量删除执行历史：ids 数组或 { all: true } */
+export async function deleteHistory(ids) {
+  const payload = Array.isArray(ids) ? { ids } : ids
+  const { data } = await http.delete('/history', { data: payload })
+  return data
+}
+
 /**
  * 订阅一次执行（run）的实时日志流（SSE）。
  * 通过 fetch 手动解析 text/event-stream，逐行回调；收到 end 或出错时 onEnd()。

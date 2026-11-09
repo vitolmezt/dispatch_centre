@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref, watch, onUnmounted } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import {
   fetchServiceGroups, createServiceGroup, updateServiceGroup,
@@ -9,8 +9,7 @@ import {
 import { refreshTick } from '../store/refresh'
 import { ignoreRunIds } from '../store/realtime'
 import { toast } from '../store/toast'
-import { useTablePanel } from '../composables/useTablePanel'
-import PagerBar from '../components/PagerBar.vue'
+import AutoTablePanel from '../components/AutoTablePanel.vue'
 import RunLogPanel from '../components/RunLogPanel.vue'
 
 const groups = ref([])
@@ -18,8 +17,7 @@ const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-
-const { panelRef, footerRef, tableHeight, bindTableResize, unbindTableResize } = useTablePanel()
+// 表格自适应高度 + 行高铺满统一由 AutoTablePanel 组件处理
 
 async function load() {
   loading.value = true
@@ -32,8 +30,7 @@ async function load() {
   }
 }
 
-onMounted(() => { load(); bindTableResize() })
-onUnmounted(unbindTableResize)
+onMounted(() => { load() })
 watch(refreshTick, () => load())
 
 function allRunning(g) { return g.running }
@@ -220,9 +217,10 @@ async function refreshGroup() {
     </div>
 
     <!-- 服务组表格 -->
-    <div class="table-panel" ref="panelRef">
-      <el-table :data="groups" v-loading="loading" :height="tableHeight"
-                :empty-text="groups.length ? '' : '还没有服务组，点右上角新建。需先有「进程独立」的后台任务作为成员'">
+    <AutoTablePanel :data="groups" v-loading="loading"
+                    :page="page" :total="total" :page-size="pageSize"
+                    @change="p => { page = p; load() }"
+                    :empty-text="groups.length ? '' : '还没有服务组，点右上角新建。需先有「进程独立」的后台任务作为成员'">
         <el-table-column prop="name" label="服务组" min-width="160">
           <template #default="{ row }"><strong>{{ row.name }}</strong></template>
         </el-table-column>
@@ -266,14 +264,7 @@ async function refreshGroup() {
             </div>
           </template>
         </el-table-column>
-      </el-table>
-
-      <div class="table-footer" ref="footerRef">
-        <PagerBar :page="page" :total="total" :page-size="pageSize" with-sizes
-                  @change="p => { page = p; load() }"
-                  @size-change="s => { pageSize = s; page = 1; load() }" />
-      </div>
-    </div>
+    </AutoTablePanel>
 
     <!-- 新建/编辑服务组抽屉 -->
     <el-drawer :model-value="editorOpen" :title="editing ? '编辑服务组' : '新建服务组'"
@@ -325,14 +316,6 @@ async function refreshGroup() {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
 .hint { color: var(--muted); font-size: 12px; }
-.table-panel {
-  flex: 1; min-height: 0;
-  display: flex; flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--panel); overflow: hidden;
-}
-.table-footer { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--panel); }
 .muted-text { color: var(--muted); }
 .ops {
   display: flex; justify-content: flex-end; align-items: center;

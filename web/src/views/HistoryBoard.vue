@@ -1,17 +1,22 @@
 <script setup>
-import { onMounted, ref, watch, onUnmounted } from 'vue'
-import { fetchHistory } from '../api'
+import { onMounted, ref, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
+import { fetchHistory, deleteHistory } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel, dict } from '../constants'
 import { refreshTick } from '../store/refresh'
 import { openRun } from '../store/drawer'
-import { useTablePanel } from '../composables/useTablePanel'
-import PagerBar from '../components/PagerBar.vue'
+import { toast } from '../store/toast'
+import AutoTablePanel from '../components/AutoTablePanel.vue'
 
 const runs = ref([])
 const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
+
+// 勾选待批量删除的记录（多选）
+const selected = ref([])
+const deleting = ref(false)
 
 const statusFilter = ref('')
 const typeFilter = ref('')
@@ -20,9 +25,7 @@ let qTimer = null
 
 const statusOptions = Object.entries(dict.groups?.STATUS || {}).map(([v, l]) => ({ v, l }))
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
-
-// 表格自适应高度：外框/表头拉伸到底部、body 随数据滚动
-const { panelRef, footerRef, tableHeight, bindTableResize, unbindTableResize } = useTablePanel()
+// 表格自适应高度 + 行高铺满统一由 AutoTablePanel 组件处理
 
 // 排序：默认按执行开始时间倒序（最近执行的在前）
 const sortField = ref('start')
@@ -54,12 +57,44 @@ async function load() {
 // 条件变化自动刷新：下拉立即、名称 300ms 去抖
 watch([statusFilter, typeFilter], () => { page.value = 1; load() })
 watch(qFilter, () => { clearTimeout(qTimer); qTimer = setTimeout(() => { page.value = 1; load() }, 300) })
-onMounted(() => { load(); bindTableResize() })
-onUnmounted(unbindTableResize)
+onMounted(() => { load() })
 // 其它页面发生动作（触发/中止）后，本页刷新一次
 watch(refreshTick, () => load())
 
 function open(run) { openRun(run.id) }
+// 勾选列点击不打开详情，其余格子点击打开
+function onRowClick(row, column) {
+  if (column.type === 'selection') return
+  open(row)
+}
+
+function onSelectionChange(rows) { selected.value = rows }
+
+async function onBatchDelete() {
+  const ids = selected.value.map(r => r.id)
+  if (!ids.length) return
+  const count = ids.length
+  try {
+    await ElMessageBox.confirm(`确定删除选中的 ${count} 条执行记录？删除后不可恢复。`, '批量删除', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch (e) {
+    return // 用户取消
+  }
+  deleting.value = true
+  try {
+    const res = await deleteHistory(ids)
+    toast.info(`已删除 ${res.deleted ?? count} 条执行记录`)
+    selected.value = []
+    await load()
+  } catch (e) {
+    toast.error(e?.response?.data?.detail || '删除失败')
+  } finally {
+    deleting.value = false
+  }
+}
 </script>
 
 <template>
@@ -80,14 +115,21 @@ function open(run) { openRun(run.id) }
         <el-form-item label="任务名称">
           <el-input v-model="qFilter" placeholder="搜索…" clearable style="width:190px" />
         </el-form-item>
+        <el-form-item>
+          <el-button type="danger" plain :disabled="!selected.length" :loading="deleting"
+                     @click="onBatchDelete">批量删除</el-button>
+        </el-form-item>
       </el-form>
     </el-card>
 
-    <!-- 数据表：表格占满剩余高度可滚动，分页固定底部 -->
-    <div class="table-panel" ref="panelRef">
-      <el-table :data="runs" v-loading="loading" :height="tableHeight" @sort-change="onSortChange"
-                :empty-text="loading ? '加载中…' : '暂无记录，去「任务列表」页触发一个任务试试'"
-                highlight-current-row @row-click="open" class="clickable">
+    <!-- 数据表：AutoTablePanel 统一处理高度/行高铺满/分页 -->
+    <AutoTablePanel :data="runs" v-loading="loading" @sort-change="onSortChange"
+                    :page="page" :total="total" :page-size="pageSize"
+                    @change="p => { page = p; load() }"
+                    row-key="id" @selection-change="onSelectionChange"
+                    highlight-current-row clickable @row-click="onRowClick"
+                    :empty-text="loading ? '加载中…' : '暂无记录，去「任务列表」页触发一个任务试试'">
+        <el-table-column type="selection" width="44" align="center" />
         <el-table-column prop="name" label="任务名称" min-width="150" sortable="custom" align="center">
           <template #default="{ row }"><strong>{{ row.job_name }}</strong></template>
         </el-table-column>
@@ -125,14 +167,7 @@ function open(run) { openRun(run.id) }
             <el-button size="small" @click.stop="open(row)">详情</el-button>
           </template>
         </el-table-column>
-      </el-table>
-
-      <div class="table-footer" ref="footerRef">
-        <PagerBar :page="page" :total="total" :page-size="pageSize" with-sizes
-                  @change="p => { page = p; load() }"
-                  @size-change="s => { pageSize = s; page = 1; load() }" />
-      </div>
-    </div>
+    </AutoTablePanel>
   </div>
 </template>
 
@@ -140,13 +175,4 @@ function open(run) { openRun(run.id) }
 .page { display: flex; flex-direction: column; gap: var(--space); }
 .toolbar :deep(.el-form-item) { margin-bottom: 0; }
 .toolbar :deep(.el-form--inline) { flex-wrap: wrap; row-gap: 12px; }
-.clickable { cursor: pointer; }
-.table-panel {
-  flex: 1; min-height: 0;
-  display: flex; flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--panel); overflow: hidden;
-}
-.table-footer { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--panel); }
 </style>

@@ -359,6 +359,22 @@ def stop_run(run_id: str):
     return result
 
 
+@app.delete("/api/history")
+def delete_history(payload: dict = Body(...)):
+    """批量删除执行历史. payload: {"ids": [run_id, ...]} 或 {"all": true} 清空全部."""
+    s = get_scheduler()
+    if payload.get("all"):
+        # 全清：删除所有历史记录（运行中的实例本就只存内存、不在库中）.
+        rows = s.store.query_runs(limit=200000)
+        n = s.store.delete_runs([r.id for r in rows])
+    else:
+        ids = payload.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(status_code=400, detail="ids 不能为空")
+        n = s.store.delete_runs([str(i) for i in ids])
+    return {"ok": True, "deleted": n}
+
+
 # ---------- 全局常量字典 ----------
 @app.get("/api/constants")
 def constants_dict():

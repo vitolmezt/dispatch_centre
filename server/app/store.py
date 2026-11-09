@@ -259,6 +259,18 @@ class Store:
     def running_runs(self) -> List[Run]:
         return self.get_runs(limit=500, status="RUNNING")
 
+    def delete_runs(self, ids: List[str]) -> int:
+        """按 id 批量删除历史记录，返回实际删除条数."""
+        ids = [i for i in ids if i]
+        if not ids:
+            return 0
+        with self._lock:
+            c = self._conn.cursor()
+            placeholders = ",".join("?" * len(ids))
+            c.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", ids)
+            self._conn.commit()
+            return c.rowcount
+
     @staticmethod
     def new_run_id() -> str:
         ts = datetime.now().strftime("%Y%m%d%H%M%S")

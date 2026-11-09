@@ -1,13 +1,12 @@
 <script setup>
-import { ref, inject, onMounted, onUnmounted, watch } from 'vue'
+import { ref, inject, onMounted, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { jobTypeLabel, enabledLabel, dict } from '../constants'
 import { fetchJobs, triggerJob, createJob, updateJob, deleteJob, enableJob, fetchJobSchema } from '../api'
 import { openJob } from '../store/drawer'
 import { refreshTick, bump } from '../store/refresh'
 import { toast } from '../store/toast'
-import { useTablePanel } from '../composables/useTablePanel'
-import PagerBar from '../components/PagerBar.vue'
+import AutoTablePanel from '../components/AutoTablePanel.vue'
 import JobEditModal from '../components/JobEditModal.vue'
 
 const reloadJobs = inject('reloadJobs', async () => {})
@@ -17,9 +16,7 @@ const total = ref(0)
 const loading = ref(true)
 const page = ref(1)
 const pageSize = ref(10)
-
-// 表格自适应高度：让表格外框/表头拉伸到底部、body 随数据滚动（含分页条数变化重算）
-const { panelRef, footerRef, tableHeight, computeTableHeight, bindTableResize, unbindTableResize } = useTablePanel()
+// 表格自适应高度 + 行高铺满统一由 AutoTablePanel 组件处理（传 fill=10 即可）
 
 // 搜索条件（下拉/输入变化即自动刷新）
 const typeFilter = ref('')
@@ -211,9 +208,7 @@ function onCommand(cmd, job) {
 
 onMounted(() => {
   load(); loadSchema()
-  bindTableResize()
 })
-onUnmounted(unbindTableResize)
 // 其它页面发生动作（触发/中止）后，本页刷新一次
 watch(refreshTick, () => load())
 </script>
@@ -245,13 +240,12 @@ watch(refreshTick, () => load())
       </el-form>
     </el-card>
 
-    <!-- 任务列表主体（表格可滚动 + 分页固定底部） -->
-    <div class="table-panel" ref="panelRef">
-      <el-table :data="items" v-loading="loading" stripe
-                :height="tableHeight"
-                @sort-change="onSortChange" @row-click="openView"
-                :empty-text="loading ? '加载中…' : '没有匹配的任务，换个搜索条件试试'"
-                class="job-table">
+    <!-- 任务列表主体：AutoTablePanel 统一处理高度/行高铺满/分页 -->
+    <AutoTablePanel :data="items" :loading="loading" stripe fill="10"
+                    :page="page" :total="total" :page-size="pageSize"
+                    @sort-change="onSortChange" @row-click="openView"
+                    :empty-text="loading ? '加载中…' : '没有匹配的任务，换个搜索条件试试'"
+                    class="job-table">
         <el-table-column prop="name" label="任务名称" min-width="150" show-overflow-tooltip>
           <template #default="{ row }"><strong class="tname">{{ row.name }}</strong></template>
         </el-table-column>
@@ -319,15 +313,7 @@ watch(refreshTick, () => load())
             </div>
           </template>
         </el-table-column>
-      </el-table>
-
-      <!-- 底部分页：固定在表格下方 -->
-      <div class="table-footer" ref="footerRef">
-        <PagerBar :page="page" :total="total" :page-size="pageSize" with-sizes
-                  @change="p => { page = p; load() }"
-                  @size-change="s => { pageSize = s; page = 1; computeTableHeight(); load() }" />
-      </div>
-    </div>
+    </AutoTablePanel>
 
     <!-- 新增/编辑任务弹窗 -->
     <JobEditModal v-if="modalOpen" :title="editingJob ? '编辑任务' : '新增任务'"
@@ -377,31 +363,6 @@ watch(refreshTick, () => load())
   margin-right: 0;
 }
 .toolbar :deep(.el-form-item__label) { color: var(--muted); font-size: 12px; margin-right: 6px; }
-
-/* ---- 表格主体 ---- */
-.table-panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--panel);
-  overflow: hidden;
-}
-.job-table {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-}
-.job-table :deep(.el-table__inner-wrapper) { height: 100%; }
-/* 表格主体背景与页面轻区分；行高 40~46 */
-.job-table :deep(.el-table__header-wrapper th) { background-color: var(--panel-2);}
-.job-table :deep(.el-table__row) { height: 44px; }
-/* 细分割线 + 悬停轻微变色 */
-.job-table :deep(.el-table__cell) { border-bottom: 1px solid var(--border); }
-.job-table :deep(.el-table__row:hover > td.el-table__cell) { background-color: #262c37 !important; }
-.job-table :deep(.el-table__empty-block) { border-top: 1px solid var(--border); }
 
 .tname { font-weight: 600; color: var(--text); font-size: 13px; }
 .tdesc { color: var(--text-secondary, #ccd2dc); font-size: 12px; }
