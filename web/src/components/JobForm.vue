@@ -2,6 +2,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import { dict } from '../constants'
 import { pickPath } from '../api'
+import { capabilities } from '../constants'
 import { toast } from '../store/toast'
 
 /**
@@ -79,6 +80,10 @@ const actingKey = ref(null)
 const isPathField = (key) => Object.prototype.hasOwnProperty.call(PATH_FIELDS, key)
 async function openPicker(key) {
   if (actingKey.value) return
+  if (!capabilities.fsPick) {
+    toast.warning('路径选择功能未启用（SC_ENABLE_FS_PICK=1 开启），请手动输入绝对路径')
+    return
+  }
   actingKey.value = key
   try {
     const fieldLabel = currentSchema.value.find(f => f.key === key)?.label || key
@@ -192,7 +197,10 @@ function onCancel() {
             <template v-else-if="isPathField(f.key)">
               <div class="path-input">
                 <el-input v-model="form.params[f.key]" :disabled="readonly" :placeholder="f.label" />
-                <el-button v-if="!readonly" class="path-btn" plain :loading="actingKey === f.key"
+                <el-button v-if="!readonly" class="path-btn" plain
+                           :disabled="!capabilities.fsPick"
+                           :title="capabilities.fsPick ? '选择路径' : '路径选择未启用（SC_ENABLE_FS_PICK=1 开启）'"
+                           :loading="actingKey === f.key"
                            @click="openPicker(f.key)">选择…</el-button>
               </div>
             </template>

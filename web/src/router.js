@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { isAuthenticated } from './auth'
 
 const routes = [
+  { path: '/login', component: () => import('./views/LoginView.vue'), meta: { title: '登录', public: true } },
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', component: () => import('./views/DashboardBoard.vue'), meta: { title: '数据看板' } },
   { path: '/jobs', component: () => import('./views/MenuBoard.vue'), meta: { title: '任务列表' } },
@@ -10,4 +12,18 @@ const routes = [
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
 ]
 
-export default createRouter({ history: createWebHistory(), routes })
+const router = createRouter({ history: createWebHistory(), routes })
+
+// 认证守卫：未登录访问受保护页面 → 跳登录；已登录访问登录页 → 跳看板
+router.beforeEach((to) => {
+  const authed = isAuthenticated()
+  if (!to.meta.public && !authed) {
+    return { path: '/login', query: to.fullPath !== '/' ? { redirect: to.fullPath } : {} }
+  }
+  if (to.path === '/login' && authed) {
+    return { path: '/dashboard' }
+  }
+  return true
+})
+
+export default router

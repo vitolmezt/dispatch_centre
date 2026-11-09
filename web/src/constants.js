@@ -10,10 +10,16 @@ import { fetchConstants } from './api'
  *     statusLabel('RUNNING')  // => '进行中'
  */
 export const dict = reactive({ groups: {} })
+export const capabilities = reactive({ fsPick: false })
 
 export async function loadConstants() {
   const data = await fetchConstants()
   dict.groups = data?.groups || {}
+  if (data?.capabilities) {
+    capabilities.fsPick = !!data.capabilities.fsPick
+  } else {
+    capabilities.fsPick = false
+  }
 }
 
 /** 按分组取文案；KEY 缺失或分组缺失时回退策略：返回英文原样或默认值. */

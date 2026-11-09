@@ -1,8 +1,10 @@
 <script setup>
 import { onMounted, onBeforeUnmount, ref, provide } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { loadConstants } from './constants'
-import { fetchJobs } from './api'
+import { fetchJobs, logout } from './api'
+import { getToken, clearAuth } from './auth'
 import { drawerState, closeJob } from './store/drawer'
 import { connectRealtime, disconnectRealtime } from './store/realtime'
 import JobDrawer from './components/JobDrawer.vue'
@@ -20,15 +22,49 @@ async function reloadJobs() {
   } catch (e) { /* ignore */ }
 }
 
+const router = useRouter()
+const route = useRoute()
+const loggedIn = ref(!!getToken())
+
+// 会话失效（401）→ 清理本地 token + 断开 SSE → 回登录页
+function handleUnauthorized() {
+  clearAuth()
+  disconnectRealtime()
+  loggedIn.value = false
+  if (router.currentRoute.value.path !== '/login') router.replace('/login')
+}
+document.addEventListener('sc:unauthorized', handleUnauthorized)
+// 登录成功 → 建立实时连接并切换登录态（路由跳转不会重新挂载 App）
+function handleAuthenticated() {
+  loggedIn.value = true
+  loadConstants().catch(() => {})
+  reloadJobs()
+  connectRealtime()
+}
+document.addEventListener('sc:authenticated', handleAuthenticated)
+
+async function doLogout() {
+  try { await logout() } catch (e) { /* 后端已失效也无妨 */ }
+  clearAuth()
+  disconnectRealtime()
+  loggedIn.value = false
+  router.replace('/login')
+  ElMessage.info('已退出登录')
+}
+
 onMounted(() => {
   loadConstants().catch(() => {})
   reloadJobs()
-  connectRealtime()   // 实时状态：任务开始/结束/中止时各看板自动刷新
+  if (getToken()) connectRealtime()   // 实时状态：任务开始/结束/中止时各看板自动刷新
+  loggedIn.value = !!getToken()
 })
-// 应用关闭时断开 SSE
-onBeforeUnmount(() => disconnectRealtime())
+// 应用关闭时断开 SSE，并卸载全局监听（避免热更新重复注册）
+onBeforeUnmount(() => {
+  disconnectRealtime()
+  document.removeEventListener('sc:unauthorized', handleUnauthorized)
+  document.removeEventListener('sc:authenticated', handleAuthenticated)
+})
 
-const route = useRoute()
 const pageTitle = {
   '/dashboard': '数据看板',
   '/jobs': '任务列表',
@@ -65,7 +101,9 @@ const menus = [
         <!-- 顶部栏：页面标题 + 右侧动作 -->
         <el-header class="topbar" height="56px">
           <div class="page-title">{{ pageTitle[route.path] || '调度中心' }}</div>
-          <div class="top-actions"></div>
+          <div class="top-actions">
+            <el-button v-if="loggedIn" size="small" text @click="doLogout">退出登录</el-button>
+          </div>
         </el-header>
 
         <!-- 内容区：flex:1 填满剩余空间，overflow hidden —— 内部由各页面自行滚动 -->

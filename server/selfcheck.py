@@ -54,15 +54,25 @@ def main():
     assert os.path.exists(demo)
     class FakeRunner:
         def on_started(self, run): pass
-        def on_log(self, run, line): pass
+        def on_log(self, run, line): run.append_log(line)
         def on_finished(self, run): pass
     ex = Executor(FakeRunner())
-    fp_job = Job.from_dict({
-        "name": "删demo", "type": "FILEOP",
-        "params": {"action": "delete_file", "source": demo, "recursive": False},
-    })
-    run = Run(id="fileop1", job_name="删demo", job_type="FILEOP", status="PENDING")
-    ex.run(run, fp_job)
+    # 阶段1安全：FILEOP 需在 SC_SAFE_ROOT 内；自检把临时目录设为安全根
+    _prev_root = os.environ.get("SC_SAFE_ROOT")
+    _tmp_abs = os.path.abspath(tmp)
+    os.environ["SC_SAFE_ROOT"] = _tmp_abs
+    try:
+        fp_job = Job.from_dict({
+            "name": "删demo", "type": "FILEOP",
+            "params": {"action": "delete_file", "source": demo, "recursive": False},
+        })
+        run = Run(id="fileop1", job_name="删demo", job_type="FILEOP", status="PENDING")
+        ex.run(run, fp_job)
+    finally:
+        if _prev_root is None:
+            os.environ.pop("SC_SAFE_ROOT", None)
+        else:
+            os.environ["SC_SAFE_ROOT"] = _prev_root
     assert run.status == "SUCCEEDED", run.status
     assert not os.path.exists(demo), "文件应已被删除"
     assert run.log and "已删除" in run.log[0], run.log

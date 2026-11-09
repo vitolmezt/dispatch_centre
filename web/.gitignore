@@ -3,3 +3,5 @@ dist/
 .DS_Store
 *.local
 .env.local
+# esbuild 构建临时目录
+.esbtmp/

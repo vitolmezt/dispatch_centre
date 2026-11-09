@@ -35,6 +35,96 @@ def _decode_line(raw: bytes) -> str:
         return no_lf.decode(_IO_ENCODING, errors="replace")
 
 
+# ---- 阶段1：安全根目录（FILEOP 与 SCRIPT/PROGRAM 分开约束） ----
+#   SC_SAFE_ROOT ：FILEOP 文件操作允许的根目录（可多个，分号/换行分隔）。
+#                  未配置 -> FAIL-CLOSED：一切文件操作被拒绝。
+#   SC_EXEC_ROOT ：SCRIPT/PROGRAM 可执行文件所在目录（可多个）。
+#                  未配置 -> FAIL-CLOSED：SCRIPT/PROGRAM 类型的 path 被拒绝。
+# 二者互相独立，避免执行目录覆盖到 .git / server/data / 密钥 / 核心源码等敏感区。
+class UnsafePathError(Exception):
+    """路径不在安全根目录内时抛出."""
+
+
+def _parse_roots(var: str) -> List[Path]:
+    """从环境变量解析安全根目录列表（分号或换行分隔），解析为绝对路径."""
+    raw = os.environ.get(var, "")
+    if not raw:
+        return []
+    roots: List[Path] = []
+    for part in raw.replace(";", "\n").replace("\n\n", "\n").split("\n"):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            roots.append(Path(part).expanduser().resolve())
+        except Exception:  # noqa: BLE001
+            continue
+    return roots
+
+
+def _fileop_roots() -> List[Path]:
+    """FILEOP 允许的根目录（SC_SAFE_ROOT）."""
+    return _parse_roots("SC_SAFE_ROOT")
+
+
+def _exec_roots() -> List[Path]:
+    """SCRIPT/PROGRAM 可执行文件所在根目录（SC_EXEC_ROOT）."""
+    # 兼容：若只配了 SC_SAFE_ROOT，未显式配 SC_EXEC_ROOT 时，SCRIPT/PROGRAM 也沿用 FILEOP 根
+    # （历史配置不炸），但反向（只配 SC_EXEC_ROOT）不影响 FILEOP 的 fail-closed。
+    if os.environ.get("SC_EXEC_ROOT"):
+        return _parse_roots("SC_EXEC_ROOT")
+    return _parse_roots("SC_SAFE_ROOT")
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """判断 path 是否严格位于 root 之下（解析符号链接/junction 后判断，防穿越）."""
+    try:
+        resolved = path.resolve() if path.exists() else Path(os.path.abspath(str(path)))
+    except Exception:  # noqa: BLE001
+        resolved = None
+    if resolved is None:
+        # 目标不存在时按词法 + resolve(strict=False) 处理
+        resolved = Path(os.path.abspath(str(path)))
+    try:
+        return resolved == root or root in resolved.parents
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _check_in_roots(p: str, roots: List[Path], label: str) -> Path:
+    """通用：校验 p 必须在某根目录内（先词法绝对化，再 resolve 消除 symlink/junction）."""
+    if not roots:
+        raise UnsafePathError(f"未配置{label}安全根，危险操作已被拒绝: {p}")
+    path = Path(p)
+    abs_p = Path(os.path.abspath(str(path)))
+    if not any(_is_within(abs_p, root) for root in roots):
+        raise UnsafePathError(f"{label}路径不在安全根目录内: {p}")
+    if path.exists():
+        resolved = path.resolve()
+        if not any(_is_within(resolved, root) for root in roots):
+            raise UnsafePathError(f"{label}路径解析后越出安全根目录: {p}")
+        return resolved
+    return abs_p
+
+
+def check_safe_path(p: str) -> Path:
+    """校验 FILEOP 路径必须在 SC_SAFE_ROOT 某根目录之内；未配置则 fail-closed 拒绝.
+
+    返回已解析的绝对 Path。越权抛 UnsafePathError.
+    """
+    return _check_in_roots(p, _fileop_roots(), "FILEOP")
+
+
+def check_exec_path(p: str) -> Path:
+    """校验 SCRIPT/PROGRAM 的可执行文件路径必须在 SC_EXEC_ROOT 某根目录之内."""
+    return _check_in_roots(p, _exec_roots(), "可执行文件")
+
+
+def safe_roots_configured() -> bool:
+    """是否配置了任一安全根（用于判定 FILEOP 是否需要校验；未配置则连 FILEOP 都禁止）."""
+    return bool(_fileop_roots() or _exec_roots())
+
+
 class Executor:
     """负责把 Job 变成真实的 OS 子进程 / 文件操作流程."""
 
@@ -91,10 +181,12 @@ class Executor:
             return ["/bin/sh", "-c", command]
         if job.type == "SCRIPT":
             path = job.params.get("path", "")
+            check_exec_path(path)  # 阶段1安全：脚本路径须在 SC_EXEC_ROOT 内
             prefix = Executor._script_prefix(path)
             return prefix + [path] + list(job.params.get("args") or [])
         if job.type == "PROGRAM":
             path = job.params.get("path", "")
+            check_exec_path(path)  # 阶段1安全：程序路径须在 SC_EXEC_ROOT 内
             return [path] + list(job.params.get("args") or [])
         raise ValueError(f"不依赖 OS 进程的 Job 类型: {job.type}")
 
@@ -105,7 +197,11 @@ class Executor:
         target = job.params.get("target", "")
         recursive = bool(job.params.get("recursive", False))
 
-        src = Path(source)
+        # 阶段1安全：source 必须在安全根内
+        src = check_safe_path(source)
+        # target 存在时也必须校验（copy/move 的落点）
+        if target:
+            _ = check_safe_path(target)
         if action == "DELETE_FILE":
             if not src.exists():
                 raise FileNotFoundError(f"删除目标不存在: {source}")
@@ -153,6 +249,7 @@ class Executor:
         run.error = ""
         proc: Optional[subprocess.Popen] = None
         timer = None
+        was_user_stopped = False
 
         try:
             if job.type == "FILEOP":

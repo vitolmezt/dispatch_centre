@@ -2,3 +2,5 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart
 apscheduler>=3.10,<4
+# 测试依赖：test_security.py 使用 fastapi.testclient（需 httpx2）
+httpx2

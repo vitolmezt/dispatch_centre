@@ -1,10 +1,36 @@
 import axios from 'axios'
+import { getToken, clearAuth } from './auth'
 
 /** 后端统一走 /api 前缀，开发时由 vite proxy 转发到 127.0.0.1:8000. */
 const http = axios.create({
   baseURL: '/api',
   timeout: 30000,
 })
+
+// 请求拦截器：自动注入 Authorization Bearer Token（不在 URL/源码/日志）
+http.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+// 响应拦截器：401(会话失效) 时清理 token，触发前端重登
+http.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err?.response?.status === 401) {
+      clearAuth()
+      // 触发应用层跳登录（通过事件广播，避免与 store 循环依赖）
+      document.dispatchEvent(new CustomEvent('sc:unauthorized'))
+    }
+    return Promise.reject(err)
+  }
+)
+
+function authHeaders(extra = {}) {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}`, ...extra } : extra
+}
 
 export async function fetchConstants() {
   const { data } = await http.get('/constants')
@@ -80,7 +106,7 @@ export function streamRunLog(runId, { onLine, onEnd } = {}) {
   const task = (async () => {
     const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}/stream`, {
       signal: controller.signal,
-      headers: { 'Accept': 'text/event-stream' },
+      headers: authHeaders({ 'Accept': 'text/event-stream' }),
     })
     if (!resp.ok || !resp.body) { onEnd?.(); return }
     const decoder = new TextDecoder()
@@ -174,6 +200,18 @@ export async function fetchServiceGroup(name) {
 
 export async function pickPath(kind, options = {}) {
   const { data } = await http.post('/fs/pick', { kind, ...options })
+  return data
+}
+
+/** 登录：校验长期凭证，换取短期会话 token. */
+export async function login(req) {
+  const { data } = await http.post('/login', req)
+  return data
+}
+
+/** 登出：吊销当前会话. */
+export async function logout() {
+  const { data } = await http.post('/logout')
   return data
 }
 
