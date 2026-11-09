@@ -89,9 +89,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# fs/pick 开关：默认关闭（需求5已确认）。仅 SC_ENABLE_FS_PICK=1 时允许，且仍需认证。
-FS_PICK_ENABLED = os.environ.get("SC_ENABLE_FS_PICK") == "1"
-
 _scheduler: Optional[Scheduler] = None
 
 
@@ -421,7 +418,7 @@ def constants_dict():
     """
     return {
         "groups": constants.ALL_GROUPS,
-        "capabilities": {"fsPick": FS_PICK_ENABLED},
+        "capabilities": {"fsPick": True},
     }
 
 
@@ -603,11 +600,10 @@ def fs_pick(payload: dict = Body(...)):
     body: { kind: "file" | "dir", title?: str, initial?: str }
     返回: { path }（用户取消时 path 为空字符串）；出错返回 500。
 
-    安全：仅当 SC_ENABLE_FS_PICK=1 且已认证(管理)时可用；默认关闭。
+    运行环境要求：需在后端主机可弹出的桌面会话（tkinter）中运行；
+    若后端运行环境无图形界面（如无桌面/远程无会话），返回 500 并给出清晰提示。
+    已认证管理员即可调用，无需任何开关。
     """
-    if not FS_PICK_ENABLED:
-        audit.audit("fs.pick", obj="", detail="fs/pick 被开关禁用", ok=False)
-        raise HTTPException(status_code=403, detail="fs/pick 已禁用（SC_ENABLE_FS_PICK=0）")
     kind = "file" if payload.get("kind") not in ("file", "dir") else payload["kind"]
     title = payload.get("title") or ("请选择文件" if kind == "file" else "请选择文件夹")
     initial = payload.get("initial") or ""
