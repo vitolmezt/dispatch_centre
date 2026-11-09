@@ -12,7 +12,7 @@
 
 | 验收项 | 结果 | 说明 |
 |---|---|---|
-| `test_phase2_recovery.py`（新增） | ✅ 22/22 | Module 1~7 单测 + 运行看板分组口径 |
+| `test_phase2_recovery.py`（新增） | ✅ 24/24 | Module 1~7 单测 + 运行看板分组口径 + **SSE 状态迁移广播** |
 | `test_security.py`（保留回归） | ✅ 12/12 | Phase 1 安全基线完好 |
 | `selfcheck.py` | ✅ SUCCESS | 常量/参数迁移/历史响应契约不变 |
 | 前端 `npm run build` | ✅ 通过 | 14s 构建，无报错，仅 500k chunk 体积提示（既有） |
@@ -27,10 +27,10 @@
 | `server/app/identity.py` | **新增** | Windows FILETIME + Job/taskkill；Linux pidfd + `/proc/boot_id` + killpg；`safe_kill` 零容忍身份核验 |
 | `server/app/store.py` | 改 | `save_run(heartbeat_only)` 心跳节流合并写；`running_runs` 分组含 UNKNOWN、排除 INTERRUPTED；`running_process_count` 只计 STARTING/RUNNING/ORPHANED |
 | `server/app/executor.py` | 改 | spawn 后采集身份快照；`run_id↔进程` 关联；`process_create_time` 不可得即拒跑 |
-| `server/app/scheduler.py` | 改 | 启动恢复扫描（先于 aps.start）；心跳循环；四问接管；SAFE-FIRST；`node_id` 优先级修复 |
+| `server/app/scheduler.py` | 改 | 启动恢复扫描（先于 aps.start）；心跳循环；四问接管；SAFE-FIRST；`node_id` 优先级修复；**状态迁移 `status_changed` SSE 广播** |
 | `server/app/constants.py` | 改 | `STARTING/INTERRUPTED/ORPHANED/UNKNOWN` 入状态字典（前端 `/api/constants` 自动同步） |
 | `server/app/main.py` | 改 | `/api/running` 增加 `alive_total` + `counts`（兼容原结构） |
-| `server/test_phase2_recovery.py` | **新增** | 22 项验收单测 |
+| `server/test_phase2_recovery.py` | **新增** | 24 项验收单测（含 SSE 广播 t70/t71） |
 | `docs/phase2-plan.md` | **新增** | 实施详细方案（修订版 3） |
 | `web/src/views/RunningBoard.vue` | 改 | 动态状态角标 + 分桶汇总 `statbar` |
 
@@ -75,7 +75,8 @@
 
 - 实施与验收在 **Windows** 完成：Windows 分支（`GetProcessTimes` FILETIME、`taskkill`/Job 语义）经代码执行 + `_os_alive_probe` 存活探针实测。
 - **Linux 分支**（`pidfd_open`、`/proc/<pid>/stat`+`boot_id`、`killpg`、`os.pidfd_open` 发信号消除单-PID 复用）已按文档编写，逻辑经静态核验；因宿主机为 Windows 未在本机跑通 Linux 真实进程路径（计划 §9.2 分平台项，需在 Linux 环境补验证）。
-- 恢复/决策/心跳/四问/SAFE-FIRST 等**平台无关逻辑**均在本机 22 项测试中覆盖。
+- 恢复/决策/心跳/四问/SAFE-FIRST/**SSE 状态同步**等**平台无关逻辑**均在本机 24 项测试中覆盖。
+- **SSE 新状态同步**：启动恢复扫描、心跳超时核查对运行态做 `UNKNOWN/ORPHANED/RUNNING(adopted)/INTERRUPTED` 收敛迁移后，统一广播 `status_changed` 事件；前端 `realtime.js` 收到任意 `run` 事件即 `bump()` 刷新看板、仅 `finished` 弹提示，故新状态实时上屏且不误弹（`t70`/`t71` 断言广播触发）。
 
 ---
 

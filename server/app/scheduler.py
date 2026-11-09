@@ -217,6 +217,16 @@ class Scheduler:
         self.broadcast({"type": "run", "event": "finished", "run_id": run.id,
                         "job_name": run.job_name, "status": run.status})
 
+    def _publish_status_change(self, run):
+        """Phase 2 · 状态迁移广播：启动恢复扫描 / 心跳超时核查对原有运行态做出
+        UNKNOWN/ORPHANED/RUNNING(adopted)/INTERRUPTED 等收敛时，推一条 status_changed
+        事件让前端实时刷新看板（仅 bump 数据，不弹 toast）。"""
+        try:
+            self.broadcast({"type": "run", "event": "status_changed", "run_id": run.id,
+                            "job_name": run.job_name, "status": run.status})
+        except Exception:  # noqa: BLE001
+            pass
+
     # ---------- SSE 实时事件推送 ----------
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=100)
@@ -477,6 +487,7 @@ class Scheduler:
                 run.interrupted_reason = ("Phase-1 遗留：缺少进程身份凭据(create_time)，"
                                           "无法安全核验，转待核查")
             self.store.save_run(run)
+            self._publish_status_change(run)
             return
 
         # 2) 具备身份凭据：用 OS 探针确认该进程目前是否存活/可复核
@@ -488,6 +499,7 @@ class Scheduler:
                 run.status = "RUNNING"
                 run.interrupted_reason = ""
                 self.store.save_run(run)
+                self._publish_status_change(run)
                 logger.info(f"恢复 run[{run.id}] 存活 -> RUNNING")
                 return
             if run.status == "UNKNOWN":
@@ -496,6 +508,7 @@ class Scheduler:
                 run.interrupted_reason = ("重启恢复：进程存活且身份匹配，转孤儿管理，"
                                           "待接管核查")
                 self.store.save_run(run)
+                self._publish_status_change(run)
                 logger.info(f"恢复 run[{run.id}] 存活 & 身份匹配 -> ORPHANED")
                 return
             if run.status == "ORPHANED":
@@ -509,6 +522,7 @@ class Scheduler:
                     run.interrupted_reason = (run.interrupted_reason or
                                               "四问接管未全过: " + note)
                 self.store.save_run(run)
+                self._publish_status_change(run)
                 logger.info(f"恢复 run[{run.id}] ORPHANED -> {'RUNNING(接管)' if adopted else '保持ORPHANED'} {note}")
                 return
             # RUNNING 且存活：维持原态（管理恢复）
@@ -527,6 +541,7 @@ class Scheduler:
         run.end = run.end or datetime.now().astimezone().isoformat(timespec="seconds")
         run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
         self.store.save_run(run)
+        self._publish_status_change(run)
         logger.info(f"恢复 run[{run.id}] 已确认结束 -> INTERRUPTED")
 
     # ---------- Phase 2 · 心跳 / 异常核查循环 ----------
@@ -593,6 +608,7 @@ class Scheduler:
                                   "心跳连续超时且 OS 探针确认进程已不在运行，判定中断")
         run.end = run.end or datetime.now().astimezone().isoformat(timespec="seconds")
         self.store.save_run(run)
+        self._publish_status_change(run)
         logger.warning(f"心跳超时 + OS 探针确认死亡: run[{run.id}] -> INTERRUPTED")
 
     # ---------- 对外 API ----------

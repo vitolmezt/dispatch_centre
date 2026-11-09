@@ -424,6 +424,54 @@ def t60_running_view_grouping():
     print("[OK] running_view 分组 + alive_total 口径 + Phase2 字段透出")
 
 
+def t70_status_change_broadcast_fires():
+    # 状态迁移(UNKNOWN/ORPHANED/INTERRUPTED)应触发 SSE status_changed 广播，
+    # 前端收到后 bump 刷新看板。用 broker 探针：记录 broadcast 的 payload。
+    s = _new_sched()
+    events = []
+    orig_broadcast = Scheduler.broadcast
+    Scheduler.broadcast = lambda self, data: events.append(data)
+    try:
+        # 心跳超时 + 探针死 -> INTERRUPTED，应广播 status_changed
+        run = _mk_run("ss1", "RUNNING", process_create_time="ct-ss", pid=333)
+        run.last_heartbeat = datetime.fromtimestamp(
+            datetime.now().timestamp() - 9999).astimezone().isoformat(timespec="seconds")
+        s.store.save_run(run)
+        orig = _patch_alive(False)
+        try:
+            s._check_heartbeat_timeout(run)
+        finally:
+            identity_mod.process_is_alive = orig
+        assert s.store.get_run("ss1").status == "INTERRUPTED"
+        sc = [e for e in events if e.get("event") == "status_changed"]
+        assert sc, "INTERRUPTED 收敛应广播 status_changed"
+        assert sc[-1]["run_id"] == "ss1" and sc[-1]["status"] == "INTERRUPTED"
+        print("[OK] M-SSE 状态迁移广播 status_changed(INTERRUPTED) 触发")
+    finally:
+        Scheduler.broadcast = orig_broadcast
+
+
+def t71_starting_no_cred_broadcast():
+    s = _new_sched()
+    events = []
+    orig_broadcast = Scheduler.broadcast
+    Scheduler.broadcast = lambda self, data: events.append(data)
+    try:
+        run = _mk_run("ss2", "STARTING")  # 无身份 -> UNKNOWN，应广播
+        s.store.save_run(run)
+        orig = _patch_alive(False)
+        try:
+            s.recover_on_start()
+        finally:
+            identity_mod.process_is_alive = orig
+        assert s.store.get_run("ss2").status == "UNKNOWN"
+        sc = [e for e in events if e.get("event") == "status_changed"]
+        assert any(e["run_id"] == "ss2" for e in sc)
+        print("[OK] M-SSE 状态迁移广播 status_changed(UNKNOWN) 触发")
+    finally:
+        Scheduler.broadcast = orig_broadcast
+
+
 def _main():
     checks = [
         t01_roundtrip_new_fields, t02_old_row_defaults, t03_run_states_contain_new,
@@ -438,6 +486,7 @@ def _main():
         t42_adopt_orphan_identity_mismatch,
         t50_safe_first_no_auto_restart, t51_safe_first_unknown_not_counted,
         t60_running_view_grouping,
+        t70_status_change_broadcast_fires, t71_starting_no_cred_broadcast,
     ]
     passed = 0
     for fn in checks:
