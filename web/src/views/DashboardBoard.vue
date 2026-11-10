@@ -127,13 +127,48 @@ function chartHeight(count) {
 }
 
 const ranges = [
-  { label: '近 24 小时', days: 1 },
+  { label: '今天', days: 1 },
   { label: '近 7 天', days: 7 },
   { label: '近 30 天', days: 30 },
 ]
 const activeRange = ref('近 7 天')
 
 function trendSeries() {
+  // 今天：从今天第一条有任务的时刻起按小时分桶（前面空时段不显示）
+  if (activeRange.value === '今天') {
+    const runs = stats.value.runsFull || []
+    const now = new Date()
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).getTime()
+    const nowTs = now.getTime()
+    // 只保留今天的记录并统计各小时计数，记录最小时刻（用于横轴起点）
+    const hourCount = {}
+    const hourOk = {}
+    let firstHour = -1
+    for (const r of runs) {
+      if (!r.start) continue
+      const t = new Date(r.start).getTime()
+      if (!isFinite(t) || t < todayStart || t > nowTs) continue
+      const h = new Date(t).getHours()
+      hourCount[h] = (hourCount[h] || 0) + 1
+      if ((r.status || 'UNKNOWN').toUpperCase() === 'SUCCEEDED') hourOk[h] = (hourOk[h] || 0) + 1
+      if (firstHour === -1 || h < firstHour) firstHour = h
+    }
+    // 从第一条任务所在小时开始，到当前系统小时为止
+    if (firstHour === -1) firstHour = 0
+    const lastHour = now.getHours()
+    const labels = []
+    const success = []
+    const failed = []
+    for (let h = firstHour; h <= lastHour; h++) {
+      const label = `${String(h).padStart(2, '0')}:00`
+      labels.push(label)
+      success.push(hourOk[h] || 0)
+      failed.push((hourCount[h] || 0) - (hourOk[h] || 0))
+    }
+    return { labels, success, failed }
+  }
+
+  // 近 7 / 30 天：按自然日分桶（最后一个有记录的日期切片）
   const ok = stats.value.dayOk || {}
   const all = stats.value.dayAll || {}
   const days = ranges.find(r => r.label === activeRange.value)?.days || 7
