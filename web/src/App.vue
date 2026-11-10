@@ -7,8 +7,11 @@ import { fetchJobs, logout } from './api'
 import { getToken, clearAuth } from './auth'
 import { drawerState, closeJob } from './store/drawer'
 import { connectRealtime, disconnectRealtime } from './store/realtime'
+import { initTheme, useTheme, toggleTheme } from './composables/useTheme'
 import JobDrawer from './components/JobDrawer.vue'
 import RunDetailDrawer from './components/RunDetailDrawer.vue'
+
+const { theme } = useTheme()
 
 // 全局常量字典 + 菜单任务列表（供抽屉用）
 const jobs = ref([])
@@ -53,6 +56,7 @@ async function doLogout() {
 }
 
 onMounted(() => {
+  initTheme()
   loadConstants().catch(() => {})
   reloadJobs()
   if (getToken()) connectRealtime()
@@ -97,6 +101,20 @@ const menus = [
         <el-header class="topbar" height="56px">
           <div class="page-title">{{ pageTitle[route.path] || '调度中心' }}</div>
           <div class="top-actions">
+            <el-tooltip :content="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'" placement="bottom" :show-after="200">
+              <button class="theme-toggle" type="button" @click="toggleTheme()" :title="theme === 'dark' ? '浅色' : '深色'">
+                <svg v-if="theme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="theme-icon">
+                  <circle cx="12" cy="12" r="5" />
+                  <line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
+                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                  <line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" />
+                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="theme-icon">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+              </button>
+            </el-tooltip>
             <el-button v-if="loggedIn" size="small" text @click="doLogout">退出登录</el-button>
           </div>
         </el-header>
@@ -134,7 +152,7 @@ const menus = [
 }
 
 .aside {
-  background: #171a21; border-right: 1px solid var(--border);
+  background: var(--bg-sidebar); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; flex-shrink: 0;
 }
 .logo {
@@ -149,9 +167,10 @@ const menus = [
 .nav { padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
 .nav-item {
   display: flex; align-items: center; gap: 12px; padding: 11px 14px;
-  border-radius: 8px; color: #aab2c0; font-size: 14px; text-decoration: none;
+  border-radius: 8px; color: var(--text-secondary); font-size: 14px; text-decoration: none;
+  transition: background .15s, color .15s;
 }
-.nav-item:hover { background: #21252e; color: var(--text); }
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .nav-item.router-link-active { background: var(--primary); color: #fff; font-weight: 600; }
 
 .topbar {
@@ -161,6 +180,16 @@ const menus = [
 }
 .page-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .top-actions { display: flex; align-items: center; gap: 8px; }
+
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px;
+  border: 1px solid var(--border); background: transparent; cursor: pointer;
+  color: var(--text-secondary);
+  transition: background .15s, color .15s, border-color .15s;
+}
+.theme-toggle:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
+.theme-icon { width: 17px; height: 17px; }
 
 .content {
   flex: 1; min-height: 0; overflow: hidden;

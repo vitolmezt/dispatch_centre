@@ -179,7 +179,7 @@ onBeforeUnmount(() => {
 }
 .fn-row { display: flex; align-items: center; gap: 10px; }
 .live-tag {
-  font-size: 11px; color: #4ade80; background: rgba(74,222,128,.12);
+  font-size: 11px; color: var(--ok); background: rgba(74,222,128,.12);
   padding: 1px 8px; border-radius: 10px;
 }
 .live-tag.off { color: var(--muted); background: rgba(127,132,145,.12); }
@@ -194,7 +194,7 @@ onBeforeUnmount(() => {
 }
 .intr-flag strong { white-space: nowrap; flex-shrink: 0; }
 .intr-flag span { word-break: break-all; line-height: 1.5; }
-.log { background: #0b0d10; font-family: var(--mono); font-size: 12px; max-height: 55vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.log { background: var(--bg); font-family: var(--mono); font-size: 12px; max-height: 55vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .log pre { margin: 0; padding: 8px 10px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .log code { display: block; font-size: 12px; line-height: 1.55; }
 </style>

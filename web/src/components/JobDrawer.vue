@@ -142,7 +142,7 @@ section { display: flex; flex-direction: column; gap: 8px; }
   color: var(--muted); font-size: 13px; background: var(--panel-2);
 }
 .kv-row span { padding: 9px 12px; font-size: 13px; word-break: break-all; }
-.sched-desc span { color: #3fbf82; font-weight: 600; }
+.sched-desc span { color: var(--ok); font-weight: 600; }
 .runs { display: flex; flex-direction: column; gap: 6px; }
 .run-row {
   display: flex; align-items: center; gap: 10px;

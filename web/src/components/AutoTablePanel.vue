@@ -53,7 +53,7 @@ onUnmounted(() => unbindTableResize())
 .table-panel :deep(.el-table__row) { height: var(--row-h, 44px); }
 .table-panel :deep(.el-table__header-wrapper th) { background-color: var(--panel-2); }
 .table-panel :deep(.el-table__cell) { border-bottom: 1px solid var(--border); }
-.table-panel :deep(.el-table__row:hover > td.el-table__cell) { background-color: #262c37 !important; }
+.table-panel :deep(.el-table__row:hover > td.el-table__cell) { background-color: var(--table-hover-bg) !important; }
 .table-panel :deep(.el-table__empty-block) { border-top: 1px solid var(--border); }
 .table-panel.clickable :deep(.el-table__row) { cursor: pointer; }
 .table-footer { flex-shrink: 0; }

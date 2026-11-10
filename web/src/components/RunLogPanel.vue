@@ -100,7 +100,7 @@ function statusText() {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #0c0e12;
+  background: var(--bg);
   display: flex; flex-direction: column;
   min-height: 0;
 }
@@ -114,10 +114,10 @@ function statusText() {
 .run-log-name { font-weight: 600; color: var(--text); }
 .run-log-status {
   font-size: 11px; padding: 1px 8px; border-radius: 10px;
-  background: #2b2f38; color: var(--muted);
+  background: var(--bg-panel-2); color: var(--text-secondary);
 }
 .run-log-status.is_run { background: rgba(53,196,109,.18); color: var(--ok); }
-.run-log-status.is_end { background: rgba(240,88,88,.18); color: #f07070; }
+.run-log-status.is_end { background: rgba(240,88,88,.18); color: var(--danger); }
 .run-log-pid { margin-left: auto; color: var(--muted); font-family: Consolas, monospace; font-size: 12px; }
 .run-log-ops { display: flex; gap: 6px; margin-left: 12px; }
 .run-log-body {
@@ -126,7 +126,7 @@ function statusText() {
   box-sizing: border-box;
 }
 .run-log-lines { display: flex; flex-direction: column; }
-.run-log-line { color: #c9d1d9; white-space: pre-wrap; word-break: break-all; }
+.run-log-line { color: var(--text); white-space: pre-wrap; word-break: break-all; }
 .run-log-empty { color: var(--muted); }
 .run-log-end {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
@@ -134,9 +134,9 @@ function statusText() {
 }
 .run-log-end-badge {
   flex-shrink: 0; padding: 1px 8px; border-radius: 10px; font-weight: 600;
-  background: rgba(240,88,88,.18); color: #f07070;
+  background: rgba(240,88,88,.18); color: var(--danger);
 }
-.run-log-end-err { color: #f0a0a0; word-break: break-all; }
+.run-log-end-err { color: var(--danger); word-break: break-all; }
 .run-log-empty-inline { color: var(--muted); }
 .run-log-empty { color: var(--muted); }
 </style>

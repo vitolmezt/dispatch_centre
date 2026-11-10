@@ -347,8 +347,8 @@ watch(refreshTick, () => load())
 .tdesc { color: var(--text-secondary, #ccd2dc); font-size: 12px; }
 
 .toggle { padding: 2px 9px; border-radius: 4px; font-size: 12px; white-space: nowrap; line-height: 1.7; }
-.toggle.on { background: #14301f; color: #3fbf82; }
-.toggle.off { background: #2c2417; color: var(--warn); }
+.toggle.on { background: rgba(63, 191, 130, .15); color: var(--ok); }
+.toggle.off { background: rgba(240, 173, 78, .15); color: var(--warn); }
 
 .ops { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; white-space: nowrap; width: 100%; }
 .ops :deep(.el-button) { margin: 0; }
@@ -360,7 +360,7 @@ watch(refreshTick, () => load())
 
 :deep(.el-dropdown-menu__item.is-warn) { color: var(--warn); }
 :deep(.el-dropdown-menu__item.danger-item) { color: var(--danger); }
-:deep(.el-dropdown-menu__item.danger-item:hover) { background: #3a2023; }
+:deep(.el-dropdown-menu__item.danger-item:hover) { background: var(--danger)26; }
 
 .table-footer {
   flex-shrink: 0;

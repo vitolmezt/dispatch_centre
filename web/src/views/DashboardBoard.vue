@@ -3,6 +3,10 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import { fetchHistory } from '../api'
 import { refreshTick } from '../store/refresh'
+import { getChartThemeOptions, chartStateColor } from '../composables/useChartTheme'
+import { getThemeVar, useTheme } from '../composables/useTheme'
+
+const { theme: themeVar } = useTheme()
 
 
 const loading = ref(false)
@@ -187,51 +191,51 @@ const rankEl = ref(null)
 const healthEl = ref(null)
 let charts = []
 
-const commonText = '#9AA5B5'
-const gridLine = 'rgba(148, 163, 184, .10)'
-
 function makeCharts() {
   charts.forEach(c => c?.dispose())
   charts = [trendEl.value, statusEl.value, rankEl.value, healthEl.value].map(el => el ? echarts.init(el) : null)
 
+  const th = getChartThemeOptions()
+  const isDark = getThemeVar() === 'dark'
+
   const trend = trendSeries()
   charts[0]?.setOption({
     animationDuration: 700,
-    tooltip: { trigger: 'axis', backgroundColor: '#202631', borderColor: '#343D4C', textStyle: { color: '#E8EDF5' } },
-    legend: { top: 0, right: 0, icon: 'circle', itemWidth: 9, itemHeight: 9, textStyle: { color: commonText, fontSize: 11 }, data: [{ name: '成功', itemStyle: { color: '#55CDA2' } }, { name: '失败', itemStyle: { color: '#F0747A' } }] },
+    tooltip: { trigger: 'axis', backgroundColor: th.tooltip.backgroundColor, borderColor: th.tooltip.borderColor, textStyle: { color: th.tooltip.textStyle.color } },
+    legend: { top: 0, right: 0, icon: 'circle', itemWidth: 9, itemHeight: 9, textStyle: { color: th.axisLabelColor, fontSize: 11 }, data: [{ name: '成功', itemStyle: { color: chartStateColor('ok') } }, { name: '失败', itemStyle: { color: chartStateColor('fail') } }] },
     grid: { left: 8, right: 12, top: 32, bottom: 8, containLabel: true },
-    xAxis: { type: 'category', boundaryGap: false, data: trend.labels, axisLabel: { color: commonText, fontSize: 11 }, axisLine: { lineStyle: { color: gridLine } }, axisTick: { show: false } },
-    yAxis: { type: 'value', axisLabel: { color: commonText, fontSize: 11 }, splitLine: { lineStyle: { color: gridLine, type: 'dashed' } }, axisLine: { show: false } },
+    xAxis: { type: 'category', boundaryGap: false, data: trend.labels, axisLabel: { color: th.axisLabelColor, fontSize: 11 }, axisLine: { lineStyle: { color: th.gridLineColor } }, axisTick: { show: false } },
+    yAxis: { type: 'value', axisLabel: { color: th.axisLabelColor, fontSize: 11 }, splitLine: { lineStyle: { color: th.gridLineColor, type: 'dashed' } }, axisLine: { show: false } },
     series: [
-      { name: '成功', type: 'line', smooth: .38, symbol: 'none', data: trend.success, lineStyle: { width: 2.5, color: '#55CDA2' }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(85,205,162,.20)' }, { offset: 1, color: 'rgba(85,205,162,0)' }]) } },
-      { name: '失败', type: 'line', smooth: .38, symbol: 'none', data: trend.failed, lineStyle: { width: 2, color: '#F0747A' } },
+      { name: '成功', type: 'line', smooth: .38, symbol: 'none', data: trend.success, lineStyle: { width: 2.5, color: chartStateColor('ok') }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: isDark ? 'rgba(85,205,162,.20)' : 'rgba(22,163,74,.14)' }, { offset: 1, color: 'rgba(85,205,162,0)' }]) } },
+      { name: '失败', type: 'line', smooth: .38, symbol: 'none', data: trend.failed, lineStyle: { width: 2, color: chartStateColor('fail') } },
     ],
   })
 
   const items = statusItems.value
   charts[1]?.setOption({
     animationDuration: 700,
-    tooltip: { trigger: 'item', backgroundColor: '#202631', borderColor: '#343D4C', textStyle: { color: '#E8EDF5' }, formatter: '{b}<br/>{c} 次 ({d}%)' },
-    title: { text: stats.value.total.toLocaleString(), subtext: '执行总数', left: 'center', top: 'center', textStyle: { color: '#F1F5F9', fontSize: 25, fontWeight: 650 }, subtextStyle: { color: '#8995A7', fontSize: 11, lineHeight: 24 } },
-    series: [{ type: 'pie', radius: ['65%', '82%'], center: ['50%', '50%'], avoidLabelOverlap: true, label: { show: false }, itemStyle: { borderColor: '#1B2029', borderWidth: 4, borderRadius: 5 }, data: items.map(i => ({ name: i.name, value: i.count, itemStyle: { color: i.color } })) }],
+    tooltip: { trigger: 'item', backgroundColor: th.tooltip.backgroundColor, borderColor: th.tooltip.borderColor, textStyle: { color: th.tooltip.textStyle.color }, formatter: '{b}<br/>{c} 次 ({d}%)' },
+    title: { text: stats.value.total.toLocaleString(), subtext: '执行总数', left: 'center', top: 'center', textStyle: { color: th.titleColor, fontSize: 25, fontWeight: 650 }, subtextStyle: { color: th.subTitleColor, fontSize: 11, lineHeight: 24 } },
+    series: [{ type: 'pie', radius: ['65%', '82%'], center: ['50%', '50%'], avoidLabelOverlap: true, label: { show: false }, itemStyle: { borderColor: th.pieBorderColor, borderWidth: 4, borderRadius: 5 }, data: items.map(i => ({ name: i.name, value: i.count, itemStyle: { color: i.color } })) }],
   })
 
   charts[2]?.setOption({
     animationDuration: 700,
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: '#202631', borderColor: '#343D4C', textStyle: { color: '#E8EDF5' } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: th.tooltip.backgroundColor, borderColor: th.tooltip.borderColor, textStyle: { color: th.tooltip.textStyle.color } },
     grid: { left: 4, right: 20, top: 8, bottom: 4, containLabel: true },
     xAxis: { type: 'value', show: false },
-    yAxis: { type: 'category', inverse: true, data: topJobs.value.map(j => j.name), axisLabel: { color: '#AAB4C4', fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false } },
-    series: [{ type: 'bar', data: topJobs.value.map(j => j.runs), barWidth: 9, showBackground: true, backgroundStyle: { color: '#2A313D', borderRadius: 6 }, itemStyle: { color: '#6C9CFF', borderRadius: [0, 5, 5, 0] }, label: { show: true, position: 'right', color: '#C7D0DE', fontSize: 11 } }],
+    yAxis: { type: 'category', inverse: true, data: topJobs.value.map(j => j.name), axisLabel: { color: th.axisLabelColorStrong, fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false } },
+    series: [{ type: 'bar', data: topJobs.value.map(j => j.runs), barWidth: 9, showBackground: true, backgroundStyle: { color: th.barBgColor, borderRadius: 6 }, itemStyle: { color: '#6C9CFF', borderRadius: [0, 5, 5, 0] }, label: { show: true, position: 'right', color: th.seriesLabelColor, fontSize: 11 } }],
   })
 
   charts[3]?.setOption({
     animationDuration: 700,
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: '#202631', borderColor: '#343D4C', textStyle: { color: '#E8EDF5' }, formatter: params => `${params[0].name}<br/>成功率：${params[0].value}%` },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: th.tooltip.backgroundColor, borderColor: th.tooltip.borderColor, textStyle: { color: th.tooltip.textStyle.color }, formatter: params => `${params[0].name}<br/>成功率：${params[0].value}%` },
     grid: { left: 4, right: 24, top: 8, bottom: 4, containLabel: true },
     xAxis: { type: 'value', max: 100, show: false },
-    yAxis: { type: 'category', inverse: true, data: healthJobs.value.map(j => j.name), axisLabel: { color: '#AAB4C4', fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false } },
-    series: [{ type: 'bar', data: healthJobs.value.map(j => ({ value: j.rate, itemStyle: { color: j.rate >= 95 ? '#43C99A' : j.rate >= 80 ? '#E7B84B' : '#EF6A70' } })), barWidth: 9, showBackground: true, backgroundStyle: { color: '#2A313D', borderRadius: 6 }, itemStyle: { borderRadius: [0, 5, 5, 0] }, label: { show: true, position: 'right', formatter: '{c}%', color: '#C7D0DE', fontSize: 11 } }],
+    yAxis: { type: 'category', inverse: true, data: healthJobs.value.map(j => j.name), axisLabel: { color: th.axisLabelColorStrong, fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false } },
+    series: [{ type: 'bar', data: healthJobs.value.map(j => ({ value: j.rate, itemStyle: { color: j.rate >= 95 ? '#43C99A' : j.rate >= 80 ? '#E7B84B' : '#EF6A70' } })), barWidth: 9, showBackground: true, backgroundStyle: { color: th.barBgColor, borderRadius: 6 }, itemStyle: { borderRadius: [0, 5, 5, 0] }, label: { show: true, position: 'right', formatter: '{c}%', color: th.seriesLabelColor, fontSize: 11 } }],
   })
 }
 
@@ -252,6 +256,7 @@ async function load() {
 }
 
 watch(activeRange, async () => { await nextTick(); makeCharts() })
+watch(themeVar, async () => { await nextTick(); makeCharts() })
 watch(refreshTick, () => load())
 
 onMounted(() => {
@@ -330,25 +335,25 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.dash { font-family: Inter, "Noto Sans SC", -apple-system, "Segoe UI", sans-serif; color: #e8edf5; display: flex; flex-direction: column; }
+.dash { font-family: Inter, "Noto Sans SC", -apple-system, "Segoe UI", sans-serif; color: var(--text); display: flex; flex-direction: column; }
 
 .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
 .kpi-card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 16px 17px 12px; min-width: 0; transition: background .18s, border-color .18s; }
-.kpi-card:hover { background: #1d232d; border-color: #3a4555; }
-.kpi-top { display: flex; justify-content: space-between; align-items: center; color: #94a0b1; font-size: 11px; }
+.kpi-card:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.kpi-top { display: flex; justify-content: space-between; align-items: center; color: var(--text-secondary); font-size: 11px; }
 .kpi-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 7px; font-size: 12px; font-weight: 700; }
 .kpi-icon.blue { color: #8bb0ff; background: #6c9cff17; }
 .kpi-icon.green { color: #43c99a; background: #43c99a17; }
 .kpi-icon.violet { color: #b49aff; background: #a78bfa17; }
 .kpi-icon.red { color: #ef7b80; background: #ef6a7017; }
 .kpi-value-row { display: flex; align-items: baseline; gap: 10px; margin-top: 10px; }
-.kpi-value-row strong { font-size: 27px; font-weight: 650; letter-spacing: -.8px; line-height: 1.2; color: #e8edf5; }
+.kpi-value-row strong { font-size: 27px; font-weight: 650; letter-spacing: -.8px; line-height: 1.2; color: var(--text); }
 .delta { font-size: 10px; font-weight: 600; }
 .delta.blue { color: #7ea8ff; }
 .delta.green { color: #43c99a; }
 .delta.violet { color: #b49aff; }
 .delta.red { color: #ef7b80; }
-.kpi-bottom { display: flex; justify-content: space-between; align-items: center; color: #687589; font-size: 9px; margin-top: 10px; }
+.kpi-bottom { display: flex; justify-content: space-between; align-items: center; color: var(--text-muted); font-size: 9px; margin-top: 10px; }
 .mini-spark { width: 55px; height: 18px; }
 .mini-spark svg { width: 100%; height: 100%; }
 .mini-spark.blue { color: #6c9cff; }
@@ -361,33 +366,33 @@ onBeforeUnmount(() => {
 .panel { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); min-width: 0; }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 17px 18px 0; }
 .panel-heading h2 { margin: 0; font-size: 12px; font-weight: 650; letter-spacing: -.1px; color: var(--text); }
-.panel-heading p { margin: 6px 0 0; font-size: 10px; color: #7e8a9c; }
-.range-switch { display: flex; gap: 2px; border: 1px solid #2a313d; border-radius: 6px; padding: 3px; background: #151a21; }
-.range-switch button { color: #7f8b9d; border: 0; border-radius: 4px; background: transparent; padding: 5px 8px; font-size: 9px; white-space: nowrap; cursor: pointer; font: inherit; }
-.range-switch button.selected { color: #dce7ff; background: #2b3a52; }
+.panel-heading p { margin: 6px 0 0; font-size: 10px; color: var(--text-muted); }
+.range-switch { display: flex; gap: 2px; border: 1px solid var(--border-strong); border-radius: 6px; padding: 3px; background: var(--bg); }
+.range-switch button { color: var(--text-muted); border: 0; border-radius: 4px; background: transparent; padding: 5px 8px; font-size: 9px; white-space: nowrap; cursor: pointer; font: inherit; }
+.range-switch button.selected { color: var(--text-primary); background: var(--bg-active); }
 .trend-chart { height: 228px; padding: 0 10px; }
-.chart-foot { display: flex; gap: 16px; align-items: center; border-top: 1px solid #262d37; margin: 0 18px; padding: 10px 0 12px; font-size: 9px; color: #8995a7; }
+.chart-foot { display: flex; gap: 16px; align-items: center; border-top: 1px solid var(--border); margin: 0 18px; padding: 10px 0 12px; font-size: 9px; color: var(--text-muted); }
 .chart-foot span { display: flex; align-items: center; gap: 6px; }
 .legend-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
 .legend-dot.success { background: #43c99a; }
 .legend-dot.failed { background: #ef6a70; }
-.foot-note { margin-left: auto; color: #657185; }
+.foot-note { margin-left: auto; color: var(--text-muted); }
 .status-content { display: flex; align-items: center; gap: 5px; padding: 7px 17px 0; }
 .status-chart { width: 46%; height: 190px; min-width: 145px; }
 .status-legend { flex: 1; min-width: 0; display: grid; gap: 12px; }
 .status-row { display: grid; grid-template-columns: minmax(65px, 1fr) auto auto; gap: 9px; align-items: center; font-size: 10px; }
-.status-name { display: flex; align-items: center; gap: 7px; color: #9ca8b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-name { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-name i { width: 8px; height: 8px; border-radius: 3px; flex-shrink: 0; }
-.status-count { color: #cdd6e2; font-family: "DM Mono", monospace; }
-.status-percent { color: #8995a7; width: 38px; text-align: right; }
-.status-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #262d37; margin: 10px 18px 0; padding: 12px 0 14px; font-size: 10px; color: #8995a7; }
-.status-footer strong { color: #e8edf5; font-size: 16px; }
-.status-footer small { color: #657186; font-size: 10px; }
+.status-count { color: var(--text); font-family: "DM Mono", monospace; }
+.status-percent { color: var(--text-muted); width: 38px; text-align: right; }
+.status-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); margin: 10px 18px 0; padding: 12px 0 14px; font-size: 10px; color: var(--text-muted); }
+.status-footer strong { color: var(--text); font-size: 16px; }
+.status-footer small { color: var(--text-muted); font-size: 10px; }
 
 .small-chart-scroll { height: 218px; overflow-y: auto; overflow-x: hidden; }
 .small-chart-scroll::-webkit-scrollbar { width: 8px; }
-.small-chart-scroll::-webkit-scrollbar-thumb { background: #333c4b; border-radius: 4px; }
-.small-chart-scroll::-webkit-scrollbar-thumb:hover { background: #46526380; }
+.small-chart-scroll::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+.small-chart-scroll::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
 .small-chart { padding: 7px 8px 10px; }
 
 @media (min-width: 1500px) { .kpi-card { padding: 19px 20px 14px; }.trend-chart { height: 250px; }.status-chart { height: 205px; }.small-chart-scroll { height: 240px; } }
