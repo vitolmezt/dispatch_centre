@@ -109,7 +109,6 @@ const statusItems = computed(() => {
 const topJobs = computed(() =>
   Object.entries(stats.value.jobCount || {})
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
     .map(([name, runs]) => ({ name, runs }))
 )
 const healthJobs = computed(() =>
@@ -120,8 +119,12 @@ const healthJobs = computed(() =>
       return { name, rate: Math.round(v.ok / t * 100), totalJob: t }
     })
     .sort((a, b) => b.rate - a.rate)
-    .slice(0, 5)
 )
+
+// 排行图内部高度：每行任务占约 30px，加上下留白（供外层容器滚动）
+function chartHeight(count) {
+  return Math.max(40, count * 30 + 24) + 'px'
+}
 
 const ranges = [
   { label: '近 24 小时', days: 1 },
@@ -181,7 +184,7 @@ function makeCharts() {
   charts[2]?.setOption({
     animationDuration: 700,
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: '#202631', borderColor: '#343D4C', textStyle: { color: '#E8EDF5' } },
-    grid: { left: 4, right: 30, top: 8, bottom: 8, containLabel: true },
+    grid: { left: 4, right: 20, top: 8, bottom: 4, containLabel: true },
     xAxis: { type: 'value', show: false },
     yAxis: { type: 'category', inverse: true, data: topJobs.value.map(j => j.name), axisLabel: { color: '#AAB4C4', fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false } },
     series: [{ type: 'bar', data: topJobs.value.map(j => j.runs), barWidth: 9, showBackground: true, backgroundStyle: { color: '#2A313D', borderRadius: 6 }, itemStyle: { color: '#6C9CFF', borderRadius: [0, 5, 5, 0] }, label: { show: true, position: 'right', color: '#C7D0DE', fontSize: 11 } }],
@@ -190,7 +193,7 @@ function makeCharts() {
   charts[3]?.setOption({
     animationDuration: 700,
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: '#202631', borderColor: '#343D4C', textStyle: { color: '#E8EDF5' }, formatter: params => `${params[0].name}<br/>成功率：${params[0].value}%` },
-    grid: { left: 4, right: 35, top: 8, bottom: 8, containLabel: true },
+    grid: { left: 4, right: 24, top: 8, bottom: 4, containLabel: true },
     xAxis: { type: 'value', max: 100, show: false },
     yAxis: { type: 'category', inverse: true, data: healthJobs.value.map(j => j.name), axisLabel: { color: '#AAB4C4', fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false } },
     series: [{ type: 'bar', data: healthJobs.value.map(j => ({ value: j.rate, itemStyle: { color: j.rate >= 95 ? '#43C99A' : j.rate >= 80 ? '#E7B84B' : '#EF6A70' } })), barWidth: 9, showBackground: true, backgroundStyle: { color: '#2A313D', borderRadius: 6 }, itemStyle: { borderRadius: [0, 5, 5, 0] }, label: { show: true, position: 'right', formatter: '{c}%', color: '#C7D0DE', fontSize: 11 } }],
@@ -229,8 +232,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-loading="loading" class="dash">
-
-    <section class="page-heading"><div class="eyebrow">OVERVIEW / MONITORING</div></section>
 
     <section class="kpi-grid">
       <article v-for="kpi in kpis" :key="kpi.label" class="kpi-card">
@@ -278,27 +279,23 @@ onBeforeUnmount(() => {
 
     <section class="secondary-grid">
       <article class="panel">
-        <div class="panel-heading"><div><h2>任务执行排行</h2><p>按执行次数排序 · Top 5</p></div></div>
-        <div ref="rankEl" class="small-chart"></div>
+        <div class="panel-heading"><div><h2>任务执行排行</h2></div></div>
+        <div class="small-chart-scroll">
+          <div ref="rankEl" class="small-chart" :style="{ height: chartHeight(topJobs.length) }"></div>
+        </div>
       </article>
       <article class="panel">
-        <div class="panel-heading"><div><h2>任务健康度</h2><p>各任务成功率表现</p></div></div>
-        <div ref="healthEl" class="small-chart"></div>
+        <div class="panel-heading"><div><h2>任务健康度</h2></div></div>
+        <div class="small-chart-scroll">
+          <div ref="healthEl" class="small-chart" :style="{ height: chartHeight(healthJobs.length) }"></div>
+        </div>
       </article>
     </section>
-
-    <footer class="page-footer">
-      <span>调度中心 · 数据看板</span>
-      <span>数据每次事件触发后更新 <i class="pulse"></i></span>
-    </footer>
   </div>
 </template>
 
 <style scoped>
-.dash { font-family: Inter, "Noto Sans SC", -apple-system, "Segoe UI", sans-serif; color: #e8edf5; }
-
-.page-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 4px 0 23px; }
-.eyebrow { color: #75839a; font-size: 9px; letter-spacing: 1.5px; font-weight: 700; margin-bottom: 8px; }
+.dash { font-family: Inter, "Noto Sans SC", -apple-system, "Segoe UI", sans-serif; color: #e8edf5; display: flex; flex-direction: column; }
 
 .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
 .kpi-card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 16px 17px 12px; min-width: 0; transition: background .18s, border-color .18s; }
@@ -325,7 +322,7 @@ onBeforeUnmount(() => {
 .mini-spark.red { color: #ef6a70; }
 
 .primary-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr); gap: 13px; margin-top: 14px; }
-.secondary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin-top: 14px; }
+.secondary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin-top: auto; padding-top: 14px; }
 .panel { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); min-width: 0; }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 17px 18px 0; }
 .panel-heading h2 { margin: 0; font-size: 12px; font-weight: 650; letter-spacing: -.1px; color: var(--text); }
@@ -352,13 +349,20 @@ onBeforeUnmount(() => {
 .status-footer strong { color: #e8edf5; font-size: 16px; }
 .status-footer small { color: #657186; font-size: 10px; }
 
-.small-chart { height: 205px; padding: 7px 12px 10px; }
-.page-footer { display: flex; justify-content: space-between; align-items: center; color: #586578; font-size: 9px; padding: 18px 2px 2px; }
-.page-footer span:last-child { display: flex; align-items: center; gap: 8px; }
-.pulse { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #43c99a; box-shadow: 0 0 0 4px #43c99a1a; flex-shrink: 0; }
+.small-chart-scroll { height: 218px; overflow-y: auto; overflow-x: hidden; }
+.small-chart-scroll::-webkit-scrollbar { width: 8px; }
+.small-chart-scroll::-webkit-scrollbar-thumb { background: #333c4b; border-radius: 4px; }
+.small-chart-scroll::-webkit-scrollbar-thumb:hover { background: #46526380; }
+.small-chart { padding: 7px 8px 10px; }
 
-@media (min-width: 1500px) { .kpi-card { padding: 19px 20px 14px; }.trend-chart { height: 250px; }.status-chart { height: 205px; }.small-chart { height: 225px; } }
+@media (min-width: 1500px) { .kpi-card { padding: 19px 20px 14px; }.trend-chart { height: 250px; }.status-chart { height: 205px; }.small-chart-scroll { height: 240px; } }
 @media (max-width: 1100px) { .kpi-grid { gap: 9px; }.kpi-card { padding: 13px; }.kpi-value-row strong { font-size: 23px; }.status-content { padding-left: 10px; padding-right: 10px; }.status-chart { min-width: 125px; }.status-legend { gap: 9px; } }
-@media (max-width: 850px) { .page-heading { align-items: flex-start; }.kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.primary-grid { grid-template-columns: 1fr; }.status-content { justify-content: center; }.status-chart { width: 40%; max-width: 220px; }.status-legend { max-width: 330px; }.secondary-grid { grid-template-columns: 1fr; } }
-@media (max-width: 560px) { .page-heading { display: block; padding: 23px 0 18px; }.kpi-grid { gap: 8px; }.kpi-card { padding: 12px; }.kpi-value-row { flex-wrap: wrap; gap: 6px; }.kpi-value-row strong { font-size: 22px; }.mini-spark { width: 42px; }.panel-heading { padding: 14px 13px 0; }.range-switch button { padding: 5px 6px; font-size: 8px; }.trend-chart { height: 205px; }.chart-foot { margin: 0 13px; gap: 11px; }.foot-note { display: none; }.status-content { padding: 7px 10px 0; gap: 0; }.status-chart { width: 43%; min-width: 125px; height: 170px; }.status-legend { gap: 8px; }.status-row { gap: 5px; font-size: 9px; }.status-percent { width: 32px; }.status-footer { margin: 0 13px; }.small-chart { height: 195px; } }
+@media (max-width: 850px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.primary-grid { grid-template-columns: 1fr; }.status-content { justify-content: center; }.status-chart { width: 40%; max-width: 220px; }.status-legend { max-width: 330px; }.secondary-grid { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .kpi-grid { gap: 8px; }.kpi-card { padding: 12px; }.kpi-value-row { flex-wrap: wrap; gap: 6px; }.kpi-value-row strong { font-size: 22px; }.mini-spark { width: 42px; }.panel-heading { padding: 14px 13px 0; }.range-switch button { padding: 5px 6px; font-size: 8px; }.trend-chart { height: 205px; }.chart-foot { margin: 0 13px; gap: 11px; }.foot-note { display: none; }.status-content { padding: 7px 10px 0; gap: 0; }.status-chart { width: 43%; min-width: 125px; height: 170px; }.status-legend { gap: 8px; }.status-row { gap: 5px; font-size: 9px; }.status-percent { width: 32px; }.status-footer { margin: 0 13px; }.small-chart-scroll { height: 180px; } }
+</style>
+
+<style>
+/* 让看板内容的最后一块(排行/健康度)贴近底部页脚,与列表页底部间距保持一致 */
+.content:has(> .dash) { display: flex; flex-direction: column; }
+.content:has(> .dash) > .dash { flex: 1; }
 </style>

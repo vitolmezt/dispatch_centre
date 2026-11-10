@@ -19,6 +19,12 @@ const scheduleDesc = computed(() => {
   return cronToHuman(sc) || ''
 })
 
+const nextRunText = computed(() => {
+  const n = job.value?.next_run_at
+  if (!n) return ''
+  return (n || '').replace('T', ' ').slice(0, 16)
+})
+
 const recentRuns = ref([])
 
 function fmtParam(v, f) {
@@ -94,6 +100,7 @@ watch(() => props.id, (v) => { if (v) loadHistory() })
           <div class="kv">
             <div class="kv-row"><label>定时</label><span class="mono">{{ job.schedule || '手动' }}</span></div>
             <div v-if="scheduleDesc" class="kv-row sched-desc"><label>周期</label><span>{{ scheduleDesc }}</span></div>
+            <div v-if="nextRunText" class="kv-row sched-desc"><label>下次执行</label><span>{{ nextRunText }}</span></div>
             <div class="kv-row"><label>超时</label><span class="mono">{{ job.timeout_s ? job.timeout_s + ' 秒' : '不限' }}</span></div>
           </div>
         </section>

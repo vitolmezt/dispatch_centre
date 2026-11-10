@@ -310,11 +310,26 @@ class Run:
         return d
 
 
+def _next_run(schedule: Optional[str]) -> Optional[str]:
+    """根据 cron 表达式推算下一次触发时间（本地时区）。
+    仅用于展示；实际调度仍由 APScheduler 的注册 trigger 决定。"""
+    if not schedule:
+        return None
+    try:
+        from datetime import datetime
+        from apscheduler.triggers.cron import CronTrigger
+        trig = CronTrigger.from_crontab(schedule)
+        nxt = trig.get_next_fire_time(None, datetime.now().astimezone())
+        return nxt.isoformat(timespec="seconds") if nxt else None
+    except Exception:  # noqa: BLE001 —— cron 非法或不可解析时不阻塞列表
+        return None
+
+
 def job_to_api(job: Job, running_count: int = 0, last: Optional[Run] = None,
                is_running: bool = False) -> Dict[str, Any]:
     d = job.to_dict()
     d["enabled"] = job.enabled
-    d["next_run_at"] = None
+    d["next_run_at"] = _next_run(job.schedule)
     d["running_count"] = running_count
     d["params_schema"] = JOB_PARAM_SCHEMA.get(job.type, {})
     if is_running:

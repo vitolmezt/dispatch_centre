@@ -1,16 +1,14 @@
 <script setup>
-import { onMounted, ref, watch, computed } from 'vue'
-import { fetchRunning, abortRun } from '../api'
+import { onMounted, ref, watch } from 'vue'
+import { fetchRunning, abortRun, fetchJobs } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel, dict } from '../constants'
 import { refreshTick, bump } from '../store/refresh'
 import { openRun } from '../store/drawer'
 import { toast } from '../store/toast'
 import AutoTablePanel from '../components/AutoTablePanel.vue'
 
-const runs = ref([])
+const rows = ref([])
 const total = ref(0)
-const aliveTotal = ref(0)
-const counts = ref({})
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
@@ -21,6 +19,7 @@ const statusFilter = ref('')
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
 const statusOptions = [
   { v: '', l: '全部状态' },
+  { v: 'PENDING', l: '待开始' },
   { v: 'RUNNING', l: '正常运行' },
   { v: 'STARTING', l: '预登记中' },
   { v: 'ORPHANED', l: '孤儿' },
@@ -34,41 +33,82 @@ function onSortChange({ prop, order }) {
   sortField.value = prop
   sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
   page.value = 1
-  load()
+  applyPage()
+}
+
+// 构建混合行：待开始的定时任务 + 正在执行的实例（定时任务在前）
+function buildRows(sched, runs) {
+  const schedRows = sched.map(j => ({
+    kind: 'sched',
+    name: j.name,
+    job_name: j.name,
+    job_type: j.type,
+    trigger: 'cron',
+    next_run_at: j.next_run_at || '',
+    running_count: j.running_count || 0,
+    status: 'PENDING',
+  }))
+  const runRows = runs.map(r => ({ ...r, kind: 'run' }))
+  return [...schedRows, ...runRows]
 }
 
 async function load() {
   loading.value = true
-  const params = { page: page.value, page_size: pageSize.value, sort: sortField.value, order: sortOrder.value }
-  if (typeFilter.value) params.type = typeFilter.value
-  if (qFilter.value.trim()) params.q = qFilter.value.trim()
-  if (statusFilter.value) params.status = statusFilter.value
   try {
-    const res = await fetchRunning(params)
-    runs.value = res.items || []
-    total.value = res.total || 0
-    aliveTotal.value = res.alive_total ?? 0
-    counts.value = res.counts || {}
+    // 取回全部活跃实例 + 全部启用的定时任务，在前端合并并分页
+    const [runRes, jobsRes] = await Promise.all([
+      fetchRunning({ page: 1, page_size: 500 }),
+      fetchJobs({ all: true }),
+    ])
+    const runs = runRes.items || []
+    const items = Array.isArray(jobsRes) ? jobsRes : (jobsRes?.items || [])
+    const sched = items.filter(j => j.schedule && j.enabled)
+    rows.value = buildRows(sched, runs)
+    total.value = rows.value.length
+    applyPage()
+  } catch (e) {
+    rows.value = []
+    total.value = 0
+    pageRows.value = []
   } finally {
     loading.value = false
   }
 }
 
-
-const stats = computed(() => {
-  const c = counts.value || {}
-  return {
-    running: c.RUNNING || 0,
-    orphaned: c.ORPHANED || 0,
-    pending: (c.UNKNOWN || 0) + (c.STARTING || 0),
-    aliveTotal: aliveTotal.value,
+const pageRows = ref([])
+// 客户端过滤 + 排序 + 分页
+function filteredRows() {
+  let list = rows.value
+  if (typeFilter.value) {
+    const t = typeFilter.value.toLowerCase()
+    list = list.filter(r => (r.job_type || '').toLowerCase() === t)
   }
-})
+  if (statusFilter.value) {
+    list = list.filter(r => r.status === statusFilter.value)
+  }
+  if (qFilter.value.trim()) {
+    const q = qFilter.value.trim().toLowerCase()
+    list = list.filter(r => (r.job_name || r.name || '').toLowerCase().includes(q))
+  }
+  // 定时任务固定在前（PENDING），其余按开始时间排序
+  const field = sortField.value === 'name' ? 'job_name' : 'start'
+  const mul = sortOrder.value === 'asc' ? 1 : -1
+  const sortable = list.filter(r => r.kind !== 'sched')
+  sortable.sort((a, b) => ((a[field] || '') > (b[field] || '') ? 1 : -1) * mul)
+  return [...list.filter(r => r.kind === 'sched'), ...sortable]
+}
+function applyPage() {
+  total.value = filteredRows().length
+  const start = (page.value - 1) * pageSize.value
+  pageRows.value = filteredRows().slice(start, start + pageSize.value)
+}
+function onPage(p) { page.value = p; applyPage() }
+function onSize(s) { pageSize.value = s; page.value = 1; applyPage() }
 
 let qTimer = null
-watch(typeFilter, () => { page.value = 1; load() })
-watch(statusFilter, () => { page.value = 1; load() })
-watch(qFilter, () => { clearTimeout(qTimer); qTimer = setTimeout(() => { page.value = 1; load() }, 300) })
+watch(typeFilter, () => { page.value = 1; applyPage() })
+watch(statusFilter, () => { page.value = 1; applyPage() })
+watch(qFilter, () => { clearTimeout(qTimer); qTimer = setTimeout(() => { page.value = 1; applyPage() }, 300) })
 
 onMounted(() => { load() })
 
@@ -86,6 +126,7 @@ async function onAbort(run) {
 function open(run) { openRun(run.id) }
 
 const STATUS_CLASS = {
+  PENDING: 'PENDING',
   RUNNING: 'RUNNING',
   STARTING: 'STARTING',
   ORPHANED: 'ORPHANED',
@@ -115,52 +156,42 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
       </el-form>
     </el-card>
 
-    <el-card shadow="never" class="statbar">
-      <div class="stat">
-        <span class="stat-num">{{ stats.running }}</span>
-        <span class="stat-label">正常运行</span>
-      </div>
-      <div class="stat stat-orphan">
-        <span class="stat-num">{{ stats.orphaned }}</span>
-        <span class="stat-label">待处理</span>
-      </div>
-      <div class="stat stat-unknown">
-        <span class="stat-num">{{ stats.pending }}</span>
-        <span class="stat-label">待核查</span>
-      </div>
-      <div class="stat stat-alive">
-        <span class="stat-num">{{ stats.aliveTotal }}</span>
-        <span class="stat-label">实际运行进程数</span>
-      </div>
-    </el-card>
-
-    <AutoTablePanel :data="runs" v-loading="loading" @sort-change="onSortChange"
+    <AutoTablePanel :data="pageRows" v-loading="loading" @sort-change="onSortChange"
                     :page="page" :total="total" :page-size="pageSize"
-                    @change="p => { page = p; load() }"
-                    :empty-text="runs.length ? '' : '当前没有正在执行的实例'">
-        <el-table-column prop="name" label="任务名称" min-width="200" align="center">
-          <template #default="{ row }"><strong>{{ row.job_name }}</strong></template>
+                    @change="onPage" @size-change="onSize"
+                    :empty-text="pageRows.length ? '' : '待开始的定时任务与执行中的实例都为空'">
+        <el-table-column label="任务名称" min-width="180" align="center">
+          <template #default="{ row }"><strong>{{ row.job_name || row.name }}</strong></template>
         </el-table-column>
-        <el-table-column label="任务类型" min-width="110" align="center">
+        <el-table-column label="任务类型" min-width="100" align="center">
           <template #default="{ row }"><span class="badge NEUTRAL">{{ jobTypeLabel(row.job_type) }}</span></template>
         </el-table-column>
-        <el-table-column label="触发" min-width="90" align="center">
-          <template #default="{ row }">{{ triggerLabel(row.trigger) }}</template>
+        <el-table-column label="触发" min-width="80" align="center">
+          <template #default="{ row }">
+            <span v-if="row.kind === 'sched'">定时</span>
+            <span v-else>{{ triggerLabel(row.trigger) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="下次执行" min-width="160" align="center">
+          <template #default="{ row }">
+            <span v-if="row.kind === 'sched'" class="mono">{{ (row.next_run_at || '').replace('T', ' ').slice(0, 16) || '—' }}</span>
+            <span v-else>—</span>
+          </template>
         </el-table-column>
         <el-table-column label="PID" min-width="80" align="center">
           <template #default="{ row }"><span class="mono">{{ row.pid ?? '—' }}</span></template>
         </el-table-column>
-        <el-table-column prop="start" label="开始时间" min-width="150" sortable="custom" align="center">
+        <el-table-column prop="start" label="开始时间" min-width="140" sortable="custom" align="center">
           <template #default="{ row }">{{ (row.start || '').replace('T',' ').slice(5,19) }}</template>
         </el-table-column>
-        <el-table-column label="状态" min-width="120" align="center">
+        <el-table-column label="状态" min-width="100" align="center">
           <template #default="{ row }">
             <span class="badge" :class="statusClass(row.status)">{{ statusLabel(row.status) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" fixed="right" width="150" align="center">
           <template #default="{ row }">
-            <div class="ops">
+            <div v-if="row.kind === 'run'" class="ops">
               <el-button size="small" @click="open(row)">详情</el-button>
               <el-button size="small" type="danger" plain @click="onAbort(row)">中止</el-button>
             </div>
@@ -175,11 +206,4 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
 .toolbar :deep(.el-form-item) { margin-bottom: 0; }
 .toolbar :deep(.el-form--inline) { flex-wrap: wrap; row-gap: 12px; }
 .ops { display: flex; align-items: center; gap: 6px; }
-.statbar { display: flex; gap: 24px; flex-wrap: wrap; }
-.stat { display: flex; align-items: baseline; gap: 8px; }
-.stat-num { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.stat-label { color: var(--el-text-color-secondary); font-size: 13px; }
-.stat-orphan .stat-num { color: #D69A4B; }
-.stat-unknown .stat-num { color: #909399; text-decoration: line-through; }
-.stat-alive .stat-num { color: #6C9CFF; }
 </style>
