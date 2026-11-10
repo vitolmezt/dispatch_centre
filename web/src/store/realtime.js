@@ -2,25 +2,10 @@ import { bump } from './refresh'
 import { toast } from './toast'
 import { getToken, clearAuth } from '../auth'
 
-/**
- * 实时事件订阅（SSE）—— 阶段1 改用 fetch + ReadableStream 以携带 Authorization 头
- * （原生 EventSource 无法自定义请求头，token 又不允许进 URL）。
- * 后端在任何任务 开始 / 结束 / 中止 时推送事件：
- *  - 结束(finished)：在屏幕中心上方弹动作结果提示（成功/失败/超时/中止）。
- * 页面一加载即建立连接，无需手动操作、也无需轮询。
- *
- * ignoreRunIds()：用于"一次性停止整组"等批量操作——那些成员 run 的完成通知
- * 由调用方统一给一条汇总提示，避免一堆子服务各自弹"已中止"。
- *
- * 说明：本文件不再使用原生 EventSource，而是 fetch 长连接 + 手动解析 SSE 事件，
- * 这样可在请求头中带 Authorization: Bearer，并实现断线重连、异常处理与连接取消。
- */
-
-let controller = null        // AbortController 用于取消连接
+let controller = null
 let reconnectTimer = null
 let running = false
 
-// 已申请忽略完成通知的 run_id 集合。命中则只 bump 刷新、不弹 toast；收到后自动移除。
 const ignored = new Set()
 
 export function ignoreRunIds(ids) {
@@ -67,7 +52,6 @@ async function openStream() {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    // 每 20 秒发送一行注释心跳，缓解 QUIC/proxy 空闲断开
     const heartbeat = setInterval(() => { /* keepalive 由后端发送，这里不重复 */ }, 60000)
     try {
       for (;;) {
@@ -86,7 +70,6 @@ async function openStream() {
       clearInterval(heartbeat)
     }
   } catch (e) {
-    // 主动取消不算错误
     if (e?.name === 'AbortError') return
   }
   scheduleReconnect()
@@ -108,7 +91,7 @@ function handleRunEvent(d) {
 function scheduleReconnect() {
   if (!running) return
   clearTimeout(reconnectTimer)
-  reconnectTimer = setTimeout(() => { openStream() }, 3000) // EventSource 默认 ~3s 重连
+  reconnectTimer = setTimeout(() => { openStream() }, 3000)
 }
 
 export function connectRealtime() {

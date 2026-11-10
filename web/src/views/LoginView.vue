@@ -12,7 +12,6 @@ const loading = ref(false)
 const errMsg = ref('')
 
 onMounted(() => {
-  // 若已登录，直接回到原本想访问的页面
 })
 
 async function onSubmit() {
@@ -24,7 +23,6 @@ async function onSubmit() {
     setToken(res.token)
     token.value = ''
     ElMessage.success('登录成功')
-    // 通知 App 建立实时连接并切换登录态（App 不会因路由跳转重新挂载）
     document.dispatchEvent(new CustomEvent('sc:authenticated'))
     const redirect = route.query.redirect || '/dashboard'
     router.replace(String(redirect))

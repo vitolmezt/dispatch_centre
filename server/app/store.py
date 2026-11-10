@@ -1,9 +1,3 @@
-"""持久化存储：使用 SQLite 保存 Job 定义与 Run 历史记录.
-
-- jobs   表：存配置的映射菜单项（以 JSON 文本列存储，便于灵活字段）
-- runs   表：存每次执行实例
-为避免引入 ORM 依赖，这里用标准库 sqlite3，轻量够用。
-"""
 from __future__ import annotations
 
 import json
@@ -19,7 +13,6 @@ from .models import Job, Run, ServiceGroup
 
 
 def _heartbeat_batch_sec() -> float:
-    """批量心跳合并写盘的阈值（秒）。默认 5s；可用 SC_HEARTBEAT_BATCH_SEC 覆盖。"""
     try:
         return max(1.0, float(os.environ.get("SC_HEARTBEAT_BATCH_SEC", "5")))
     except (TypeError, ValueError):
@@ -30,7 +23,6 @@ class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        # sqlite3 连接默认按线程隔离在调用线程，这里统一用一个带锁的连接
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -58,12 +50,10 @@ class Store:
                     status TEXT
                 )
             """)
-            # 兼容旧库：jobs 表补 created_at 列，并回填为更新时间的首包时间
             cols = [r["name"] for r in c.execute("PRAGMA table_info(jobs)").fetchall()]
             if "created_at" not in cols:
                 c.execute("ALTER TABLE jobs ADD COLUMN created_at TEXT")
                 c.execute("UPDATE jobs SET created_at=updated_at WHERE created_at IS NULL")
-            # 兼容旧库：runs 表补 job_type 列（若不存在）
             rcols = [r["name"] for r in c.execute("PRAGMA table_info(runs)").fetchall()]
             if "job_type" not in rcols:
                 c.execute("ALTER TABLE runs ADD COLUMN job_type TEXT")
@@ -78,16 +68,13 @@ class Store:
             """)
             self._conn.commit()
 
-    # ---- jobs ----
     def upsert_jobs(self, jobs: List[Job]):
-        """保存任务：更新 updated_at，created_at 首次写入后保持不变（数据库列为权威来源）."""
         with self._lock:
             c = self._conn.cursor()
             for j in jobs:
                 now = datetime.now(timezone.utc).isoformat()
                 row = c.execute("SELECT created_at FROM jobs WHERE name=?",
                                 (j.name,)).fetchone()
-                # 已有任务沿用库内 created_at；新任务首次写入时间
                 created = (row["created_at"] if row and row["created_at"]
                            else j.created_at or now)
                 j.created_at = created
@@ -109,7 +96,6 @@ class Store:
         result: Dict[str, Job] = {}
         for r in rows:
             job = Job.from_dict(json.loads(r["job_json"]))
-            # created_at/updated_at 以数据库列为权威来源（旧库 job_json 无这两个字段）
             if not job.created_at and r["created_at"]:
                 job.created_at = r["created_at"]
             if not job.updated_at and r["updated_at"]:
@@ -124,7 +110,6 @@ class Store:
             self._conn.commit()
 
     def get_job(self, name: str) -> Optional[Job]:
-        """按名取单条 Job 定义；不存在返回 None."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT job_json FROM jobs WHERE name=?", (name,)
@@ -133,7 +118,6 @@ class Store:
             return None
         return Job.from_dict(json.loads(row["job_json"]))
 
-    # ---- service_groups ----
     def upsert_service_group(self, group: "ServiceGroup"):
         with self._lock:
             now = datetime.now(timezone.utc).isoformat()
@@ -174,17 +158,10 @@ class Store:
             self._conn.execute("DELETE FROM service_groups WHERE name=?", (name,))
             self._conn.commit()
 
-    # ---- runs ----
-    def save_run(self, run: Run, heartbeat_only: bool = False):
-        """持久化一个 Run.
 
-        heartbeat_only=True 表示这次只是批量心跳刷新：仅当距离上一次落库超过
-        SC_HEARTBEAT_BATCH_SEC 才真正写盘（合并写），从而避免高频心跳把 SQLite
-        写放大。心跳绝不单独作为"进程存活"判据，只做管理链路活性记录。
-        """
+    def save_run(self, run: Run, heartbeat_only: bool = False):
         now = datetime.now(timezone.utc).isoformat()
         if heartbeat_only:
-            # 心跳节流：与库内 last_heartbeat 相比，未超过阈值则跳过写盘（合并写）。
             old = self.get_run(run.id)
             if old is not None:
                 prev = old.last_heartbeat or ""
@@ -192,11 +169,9 @@ class Store:
                     from datetime import datetime as _dt
                     gap = (datetime.now(timezone.utc) -
                            _dt.fromisoformat(prev)).total_seconds()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     gap = 1.0 + _heartbeat_batch_sec()
                 if gap < _heartbeat_batch_sec():
-                    # 未到写盘时机：仅把最新心跳时间标记到内存对象上，
-                    # 由下一次真正落库合并提交（轻量合并，避免高频写放大）。
                     run.last_heartbeat = now
                     return
             run.last_heartbeat = now
@@ -216,7 +191,6 @@ class Store:
     def _run_query(self, /, status=None, job_name=None, job_type=None,
                    name_like=None, sort=None, order="desc",
                    offset=None, limit=None):
-        """构造 runs 查询的 where 段与参数."""
         sql = "SELECT run_json FROM runs WHERE 1=1"
         params: List[Any] = []
         if status:
@@ -231,7 +205,6 @@ class Store:
         if name_like:
             sql += " AND job_name LIKE ?"
             params.append(f"%{name_like}%")
-        # 排序字段白名单，仅允许受支持的列名，避免 SQL 注入
         col = {"start": "started_at", "name": "job_name", "end": "ended_at"}.get(
             sort if sort in ("start", "name", "end") else "start", "started_at")
         direction = "ASC" if str(order).lower() == "asc" else "DESC"
@@ -248,7 +221,6 @@ class Store:
 
     def query_runs(self, *, status=None, job_name=None, job_type=None, name_like=None,
                    sort=None, order="desc", offset=0, limit=200) -> List[Run]:
-        """分页 + 过滤 + 排序查询 runs，返回 [Run, ...]."""
         sql, params = self._run_query(status=status, job_name=job_name,
                                       job_type=job_type, name_like=name_like,
                                       sort=sort, order=order,
@@ -290,13 +262,6 @@ class Store:
         return Run.from_dict(json.loads(row["run_json"]))
 
     def running_runs(self) -> List[Run]:
-        """返回所有"应展示在执行中心/运行列表"的运行。
-
-        Phase 2：已确认存活或待核查的运行都留在运行区（RUNNING / STARTING /
-        ORPHANED / UNKNOWN）。INTERRUPTED 已确认异常结束 -> 归入历史。
-        注意：UNKNOWN 仅表示"待核查"，并不代表已确认存活；是否计入"实际在跑数"
-        由 running_process_count() 决定（UNKNOWN 不计）。
-        """
         states = ("STARTING", "RUNNING", "ORPHANED", "UNKNOWN")
         if not states:
             return []
@@ -307,10 +272,6 @@ class Store:
         return [Run.from_dict(json.loads(r["run_json"])) for r in rows]
 
     def running_process_count(self) -> int:
-        """实际在跑的进程数：仅统计已确认存活/在管理中的状态.
-
-        UNKNOWN 不代表"已确认存活"，因此不计入 actual running-process count。
-        """
         states = ("STARTING", "RUNNING", "ORPHANED")
         sql = "SELECT COUNT(*) FROM runs WHERE status IN ({})".format(
             ",".join("?" * len(states)))
@@ -319,7 +280,6 @@ class Store:
         return row[0] if row else 0
 
     def delete_runs(self, ids: List[str]) -> int:
-        """按 id 批量删除历史记录，返回实际删除条数."""
         ids = [i for i in ids if i]
         if not ids:
             return 0

@@ -17,7 +17,6 @@ const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-// 表格自适应高度 + 行高铺满统一由 AutoTablePanel 组件处理
 
 async function load() {
   loading.value = true
@@ -37,10 +36,9 @@ function allRunning(g) { return g.running }
 function badgeType(g) { return g.running ? 'RUNNING' : 'NEUTRAL' }
 function statusLabel(g) { return g.running ? '运行中' : '已停止' }
 
-// ---- 新建/编辑 ----
 const editorOpen = ref(false)
 const editing = ref(null)
-const jobOptions = ref([])  // 可选作成员的任务
+const jobOptions = ref([])
 
 async function openCreate() {
   editing.value = null
@@ -57,7 +55,6 @@ async function loadDetachJobs() {
   try {
     const res = await fetchJobs({ all: true })
     const items = Array.isArray(res) ? res : (res?.items || [])
-    // 候选成员：已存在于本组的任务仍可保留在列表
     return items
   } catch (e) { return [] }
 }
@@ -105,7 +102,6 @@ function removeMember(jn) {
   draft.value.members = draft.value.members.filter(m => m.job_name !== jn)
 }
 
-// ---- 启动 / 停止 ----
 const acting = ref({})
 async function onStart(g) {
   acting.value[g.name] = 'start'
@@ -122,8 +118,6 @@ async function onStart(g) {
 async function onStop(g) {
   acting.value[g.name] = 'stop'
   try {
-    // 整组停止前，先申请忽略各运行成员 run 的"完成"通知，
-    // 否则每个子服务(被强杀标 KILLED)都会单弹一条"已中止"，再由这里统一给一条汇总提示。
     ignoreRunIds((g?.members || []).map(m => m.run_id))
     await stopServiceGroup(g.name)
     toast.info(`服务组「${g.name}」已停止`)
@@ -143,7 +137,7 @@ async function onDelete(g) {
       type: 'warning',
     })
   } catch (e) {
-    return // 用户取消
+    return
   }
   try {
     await deleteServiceGroup(g.name)
@@ -154,13 +148,11 @@ async function onDelete(g) {
   }
 }
 
-// 「⋯」更多下拉的编辑/删除
 function onMore(cmd, row) {
   if (cmd === 'edit') openEdit(row)
   else if (cmd === 'delete') onDelete(row)
 }
 
-// ---- 成员实时日志抽屉 ----
 const logGroup = ref(null)
 const logOpen = ref(false)
 
@@ -173,8 +165,6 @@ function firstRunningMember(g) {
   return (g?.members || []).find(m => m.status === 'RUNNING') || null
 }
 
-// 单个成员独立启动：触发其底层 Job（常驻）
-// 不再弹"正在启动/已启动"——是否成功由该面板标题栏的状态徽标实时反映，避免重复提示
 async function startMember(member) {
   try {
     await triggerJob(member.job_name)
@@ -183,11 +173,9 @@ async function startMember(member) {
     toast.error(e?.response?.data?.detail || `${member.label || member.job_name} 启动失败`)
   }
 }
-// 单个成员独立停止：按当前 run 的 PID 整树 kill
 async function stopMember(member) {
   if (!member.run_id) { toast.info(`${member.label || member.job_name} 未在运行`); return }
   try {
-    // 提前忽略该 run 的 finished 通知，避免 SSE 再弹一条"已中止"，与下面的"已停止"重复
     ignoreRunIds([member.run_id])
     await stopRun(member.run_id)
     toast.info(`${member.label || member.job_name} 已停止`)
@@ -201,7 +189,6 @@ async function refreshGroup() {
   try {
     const fresh = await fetchServiceGroup(logGroup.value.name)
     if (fresh) {
-      // 用守卫避免直接改 member 对象引用
       logGroup.value.members = fresh.members
     }
   } catch (e) { /* 忽略刷新错误，下次操作会重读 */ }
@@ -210,13 +197,11 @@ async function refreshGroup() {
 
 <template>
   <div class="page">
-    <!-- 工具栏：标题 + 新建 -->
     <div class="toolbar-row">
       <div class="hint">把多个常驻（进程独立）任务编排为「一键启动/停止」的服务组，如前端 + 后端整套拉起。点某行「日志」可实时查看该组各成员终端输出。</div>
       <el-button type="primary" @click="openCreate">新建服务组</el-button>
     </div>
 
-    <!-- 服务组表格 -->
     <AutoTablePanel :data="groups" v-loading="loading"
                     :page="page" :total="total" :page-size="pageSize"
                     @change="p => { page = p; load() }"
@@ -266,7 +251,6 @@ async function refreshGroup() {
         </el-table-column>
     </AutoTablePanel>
 
-    <!-- 新建/编辑服务组抽屉 -->
     <el-drawer :model-value="editorOpen" :title="editing ? '编辑服务组' : '新建服务组'"
                size="520px" @close="editorOpen = false">
       <el-form label-width="72px" label-position="left">
@@ -297,8 +281,6 @@ async function refreshGroup() {
         <el-button type="primary" @click="onSave">保存</el-button>
       </template>
     </el-drawer>
-
-    <!-- 成员实时日志抽屉：加宽占屏 ~3/5，成员左右横排，每个面板可独立启动/停止 -->
     <el-drawer :model-value="logOpen" :title="logGroup ? `实时日志 · ${logGroup.name}` : ''"
                size="60%" @close="logOpen = false">
       <div v-if="logGroup" class="log-view">
@@ -333,7 +315,7 @@ async function refreshGroup() {
   overflow-y: auto;
 }
 .log-view :deep(.run-log-panel) {
-  flex: 0 0 calc(50% - 7px);   /* 固定两列：每个面板占一半宽（减 gap 的一半） */
+  flex: 0 0 calc(50% - 7px);
   max-width: calc(50% - 7px);
 }
 .log-view :deep(.run-log-body) {

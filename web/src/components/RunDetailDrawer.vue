@@ -4,15 +4,9 @@ import { fetchRun, streamRunLog } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel } from '../constants'
 import { refreshTick } from '../store/refresh'
 
-/**
- * 全局右侧抽屉：展示一条执行记录的详情。
- *  - 基本信息（类型 / 触发 / PID / 开始 / 结束 / 耗时 / 退出码 / 错误）
- *  - 运行日志：运行中经 SSE 实时流式追加（不轮询），结束后展示完整历史。
- *    run.log 在内存/落库均为有界(最近2000行)——超出覆盖最旧，避免无限膨胀。
- */
 
 const props = defineProps({
-  id: String,                 // run id
+  id: String,
 })
 const emit = defineEmits(['close'])
 
@@ -46,7 +40,6 @@ const metaItems = computed(() => {
     { label: '退出码', value: String(r.exit_code ?? '—') },
   ]
   if (r.error) items.push({ label: '错误', value: r.error })
-  // Phase 2 · 身份 / 运行形态 / 中断上下文字段（有值才显示）
   if (r.node_id) items.push({ label: '节点', value: r.node_id })
   if (r.job_type !== 'FILEOP') {
     items.push({ label: '进程独立', value: r.detached ? '是 (detach 常驻)' : '否' })
@@ -59,7 +52,6 @@ const metaItems = computed(() => {
   return items
 })
 
-// Phase 2 · 异常/待核查状态的搁置原因（用于 ORPHANED / UNKNOWN / INTERRUPTED 醒目展示）
 const interruptNotice = computed(() => {
   const r = run.value
   if (!r) return ''
@@ -68,7 +60,6 @@ const interruptNotice = computed(() => {
   return r.interrupted_reason || r.error || statusLabel(r.status)
 })
 
-// 切换是否跟随滚动到底
 function onScroll() {
   const el = logEl.value
   if (!el) return
@@ -94,11 +85,9 @@ async function load(runId = props.id) {
   }
 }
 
-// 运行中：后续日志走 SSE 实时流（替代旧的 2.5s 轮询）
 function startStream(runId) {
   if (isStreaming || !run.value || run.value.status !== 'RUNNING') return
   isStreaming = true
-  // 回放 fetchRun 已带回的 log（避免重复拉流首段），新行即时追加
   stream = streamRunLog(runId, {
     onLine: (line) => {
       run.value.log = run.value.log || []
@@ -115,13 +104,11 @@ function startStream(runId) {
   })
 }
 
-// 其它页面全局事件后也刷新一次（列表状态变化）；运行中日志仍走流，仅刷新元数据
 watch(refreshTick, async () => {
   if (!open.value || !run.value) return
   const cached = run.value
   try {
     const fresh = await fetchRun(props.id)
-    // 保留实时流已追加的日志行，仅用新元数据刷新基本信息
     fresh.log = cached.log
     run.value = fresh
   } catch (e) { /* keep */ }
@@ -153,8 +140,6 @@ onBeforeUnmount(() => {
       </template>
 
       <div v-if="run" class="d-body">
-        <!-- 元信息网格：多列对齐；短字段保短，长字段(可执行文件/目录等)截断省略，
-        鼠标悬停用 title 显示完整内容（同任务列表描述交互） -->
         <div class="meta">
           <div v-for="m in metaItems" :key="m.label" class="m-item" :title="m.value">
             <label>{{ m.label }}</label>
@@ -162,7 +147,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- Phase 2 · 异常状态搁置原因：ORPHANED / UNKNOWN / INTERRUPTED 时醒目提示 -->
         <div v-if="interruptNotice" class="intr-flag">
           <strong>搁置原因</strong>
           <span>{{ interruptNotice }}</span>

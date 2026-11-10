@@ -14,7 +14,6 @@ const routes = [
 
 const router = createRouter({ history: createWebHistory(), routes })
 
-// 认证守卫：未登录访问受保护页面 → 跳登录；已登录访问登录页 → 跳看板
 router.beforeEach((to) => {
   const authed = isAuthenticated()
   if (!to.meta.public && !authed) {

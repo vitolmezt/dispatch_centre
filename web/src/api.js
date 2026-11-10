@@ -94,11 +94,6 @@ export async function deleteHistory(ids) {
   return data
 }
 
-/**
- * 订阅一次执行（run）的实时日志流（SSE）。
- * 通过 fetch 手动解析 text/event-stream，逐行回调；收到 end 或出错时 onEnd()。
- * 用于运行详情页在任务执行中实时追加终端输出。
- */
 export function streamRunLog(runId, { onLine, onEnd } = {}) {
   let aborted = false
   const controller = new AbortController()
@@ -117,7 +112,6 @@ export function streamRunLog(runId, { onLine, onEnd } = {}) {
         const { value, done } = await reader.read()
         if (done) break
         buf += decoder.decode(value, { stream: true })
-        // 按空行切分 SSE 事件块
         let idx
         while ((idx = buf.indexOf('\n\n')) >= 0) {
           const chunk = buf.slice(0, idx)

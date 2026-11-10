@@ -16,14 +16,9 @@ const total = ref(0)
 const loading = ref(true)
 const page = ref(1)
 const pageSize = ref(10)
-// 表格自适应高度 + 行高铺满统一由 AutoTablePanel 组件处理（传 fill=10 即可）
-
-// 搜索条件（下拉/输入变化即自动刷新）
 const typeFilter = ref('')
 const enabledFilter = ref('')
 const qFilter = ref('')
-
-// 排序：默认按创建时间倒序（新任务在前）
 const sortField = ref('created_at')
 const sortOrder = ref('desc')
 
@@ -35,22 +30,14 @@ function onSortChange({ prop, order }) {
   load()
 }
 const fmtTime = (s) => (s || '').replace('T', ' ').slice(0, 16)
-
-// 启动确认：记录当前待触发的任务名，气泡显示在其按钮正上方
 const confirmRun = ref(null)
 const running = ref(false)
-
-// 动态表单单据（后端下发） + 新增/编辑弹窗状态
 const schemas = ref({ types: {}, schemas: {} })
 const modalOpen = ref(false)
-const editingJob = ref(null) // null=新增, {..}=编辑
-// 只读查看弹窗状态：点击表格行弹出「任务详情」（样式同编辑表单，仅查看不可编辑）
+const editingJob = ref(null)
 const viewOpen = ref(false)
 const viewJob = ref(null)
-
-// 操作中按钮的禁用态：jobName -> bool
 const acting = ref({})
-
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
 const enabledOptions = Object.entries(dict.groups?.ENABLED || {}).map(([v, l]) => ({ v, l }))
 
@@ -69,7 +56,6 @@ async function load() {
   }
 }
 
-// 条件变化自动刷新（名称模糊去抖）
 watch([typeFilter, enabledFilter], () => { page.value = 1; load() })
 let qTimer = null
 watch(qFilter, () => {
@@ -91,12 +77,12 @@ async function onConfirmRun() {
     await triggerJob(confirmRun.value.name)
     toast.success(`已启动「${confirmRun.value.name}」`)
     await reloadJobs()
-    bump() // 通知其他列表页刷新
+    bump()
   } catch (e) {
     const code = e?.response?.status
     const detail = e?.response?.data?.detail || e.message
-    if (code === 409) toast.info(detail)   // 正在运行，阻止
-    else if (code === 403) toast.error(detail)   // 已停用
+    if (code === 409) toast.info(detail)
+    else if (code === 403) toast.error(detail)
     else toast.error(detail)
   } finally {
     running.value = false
@@ -105,7 +91,6 @@ async function onConfirmRun() {
   }
 }
 
-// ---- 新增 / 编辑 ----
 function openCreate() {
   editingJob.value = null
   modalOpen.value = true
@@ -116,7 +101,6 @@ function openEdit(job) {
   modalOpen.value = true
 }
 
-// 点击表格行 → 只读详情（样式同编辑表单，不可编辑）
 function openView(job) {
   viewJob.value = JSON.parse(JSON.stringify(job))
   viewOpen.value = true
@@ -145,7 +129,6 @@ function onModalClose() {
   editingJob.value = null
 }
 
-// ---- 停用/启用 与 删除 ----
 async function onToggle(job) {
   if (job.enabled && job.running_count > 0) {
     toast.info(`「${job.name}」正在执行中，不能停用`)
@@ -174,7 +157,7 @@ async function onDelete(job) {
       type: 'warning',
     })
   } catch (e) {
-    return // 用户取消
+    return
   }
   acting.value = { ...acting.value, [job.name]: true }
   try {
@@ -189,7 +172,6 @@ async function onDelete(job) {
   }
 }
 
-// 筛选重置：清空全部筛选并回到第一页
 function resetFilters() {
   typeFilter.value = ''
   enabledFilter.value = ''
@@ -198,7 +180,6 @@ function resetFilters() {
   load()
 }
 
-// 「更多操作」下拉命令分发
 function onCommand(cmd, job) {
   if (cmd === 'edit') openEdit(job)
   else if (cmd === 'toggle') onToggle(job)
@@ -209,13 +190,11 @@ function onCommand(cmd, job) {
 onMounted(() => {
   load(); loadSchema()
 })
-// 其它页面发生动作（触发/中止）后，本页刷新一次
 watch(refreshTick, () => load())
 </script>
 
 <template>
   <div class="job-page">
-    <!-- 任务筛选工具栏 -->
     <el-card shadow="never" class="toolbar">
       <el-form inline class="toolbar-form" @submit.prevent>
         <div class="toolbar-group">
@@ -240,7 +219,6 @@ watch(refreshTick, () => load())
       </el-form>
     </el-card>
 
-    <!-- 任务列表主体：AutoTablePanel 统一处理高度/行高铺满/分页 -->
     <AutoTablePanel :data="items" :loading="loading" stripe fill="10"
                     :page="page" :total="total" :page-size="pageSize"
                     @change="p => { page = p; load() }"
@@ -263,7 +241,6 @@ watch(refreshTick, () => load())
         </el-table-column>
         <el-table-column label="执行方式" min-width="100">
           <template #default="{ row }">
-            <!-- 是否定时：有 schedule 即定时；cron 具体等看任务详情 -->
             <span v-if="row.schedule" :class="['badge', row.enabled ? 'RUNNING' : '']">定时</span>
             <span v-else class="badge NEUTRAL">手动</span>
           </template>
@@ -280,7 +257,6 @@ watch(refreshTick, () => load())
         <el-table-column label="操作" fixed="right" width="240" align="center">
           <template #default="{ row }">
             <div class="ops" @click.stop>
-              <!-- 主操作：启动（执行一次，含确认气泡） -->
               <el-popover :visible="confirmRun === row" placement="top" :width="240">
                 <template #reference>
                   <el-button size="small"
@@ -299,14 +275,12 @@ watch(refreshTick, () => load())
                 </div>
               </el-popover>
 
-              <!-- 启用/停用：互斥行内主按钮（已启用→停用，已停用→启用） -->
               <el-button v-if="row.enabled" size="small" type="danger" plain :loading="acting[row.name]===row.name"
                          :disabled="row.running_count > 0" :title="row.running_count > 0 ? '任务正在执行中，不能停用' : ''"
                          @click="onToggle(row)">停用</el-button>
               <el-button v-else size="small" type="primary"
                          :loading="acting[row.name]===row.name" @click="onToggle(row)">启用</el-button>
 
-              <!-- 更多操作下拉 -->
               <el-dropdown trigger="click" @command="c => onCommand(c, row)" @click.stop>
                 <el-button size="small" text><span class="more-dots">⋯</span></el-button>
                 <template #dropdown>
@@ -323,12 +297,10 @@ watch(refreshTick, () => load())
         </el-table-column>
     </AutoTablePanel>
 
-    <!-- 新增/编辑任务弹窗 -->
     <JobEditModal v-if="modalOpen" :title="editingJob ? '编辑任务' : '新增任务'"
                   :schemas="schemas" :initial="editingJob"
                   @close="onModalClose" @submit="onModalSubmit" />
 
-    <!-- 只读详情弹窗：点击表格行弹出，样式同编辑表单，仅查看不可编辑 -->
     <JobEditModal v-if="viewOpen" title="任务详情" readonly
                   :schemas="schemas" :initial="viewJob"
                   @close="viewOpen = false" />
@@ -336,19 +308,18 @@ watch(refreshTick, () => load())
 </template>
 
 <style scoped>
-/* ===== 页布局：标题/工具栏固定，表格占满剩余高度可滚动，分页固定底部 ===== */
 .job-page {
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space);
-  overflow: hidden;   /* 页内滚动交给表格主体，本层不滚 */
+  overflow: hidden;
 }
 
 .toolbar {
   flex-shrink: 0;
-  overflow: hidden;   /* 预留横向，窄屏时由 toolbar-form 处理 */
+  overflow: hidden;
   border-radius: var(--radius-sm);
   --el-card-padding: 10px 14px;
 }
@@ -357,7 +328,7 @@ watch(refreshTick, () => load())
   align-items: center;
   justify-content: space-between;
   gap: var(--space);
-  flex-wrap: wrap;   /* 窄屏允许换行，不挤压变形 */
+  flex-wrap: wrap;
 }
 .toolbar-group {
   display: flex;
@@ -375,12 +346,10 @@ watch(refreshTick, () => load())
 .tname { font-weight: 600; color: var(--text); font-size: 13px; }
 .tdesc { color: var(--text-secondary, #ccd2dc); font-size: 12px; }
 
-/* 启停小标签：简洁文字标签 */
 .toggle { padding: 2px 9px; border-radius: 4px; font-size: 12px; white-space: nowrap; line-height: 1.7; }
 .toggle.on { background: #14301f; color: #3fbf82; }
 .toggle.off { background: #2c2417; color: var(--warn); }
 
-/* ---- 操作列 ---- */
 .ops { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; white-space: nowrap; width: 100%; }
 .ops :deep(.el-button) { margin: 0; }
 .more-dots { font-size: 16px; line-height: 1; letter-spacing: 1px; padding: 0 2px; }
@@ -389,19 +358,16 @@ watch(refreshTick, () => load())
 .pop-msg { margin-bottom: 10px; font-size: 13px; word-break: break-word; }
 .pop-actions { display: flex; justify-content: center; gap: 6px; }
 
-/* 更多下拉：停用项用警示色、删除项用危险色 */
 :deep(.el-dropdown-menu__item.is-warn) { color: var(--warn); }
 :deep(.el-dropdown-menu__item.danger-item) { color: var(--danger); }
 :deep(.el-dropdown-menu__item.danger-item:hover) { background: #3a2023; }
 
-/* ---- 底部分页固定 ---- */
 .table-footer {
   flex-shrink: 0;
   border-top: 1px solid var(--border);
   background: var(--panel);
 }
 
-/* ---- 响应式：窄屏时筛选换行、搜索框占宽 ---- */
 @media (max-width: 900px) {
   .toolbar-form { flex-direction: column; align-items: stretch; }
   .toolbar-group { justify-content: flex-start; }

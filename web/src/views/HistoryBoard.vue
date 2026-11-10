@@ -13,21 +13,14 @@ const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-
-// 勾选待批量删除的记录（多选）
 const selected = ref([])
 const deleting = ref(false)
-
 const statusFilter = ref('')
 const typeFilter = ref('')
 const qFilter = ref('')
 let qTimer = null
-
 const statusOptions = Object.entries(dict.groups?.STATUS || {}).map(([v, l]) => ({ v, l }))
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
-// 表格自适应高度 + 行高铺满统一由 AutoTablePanel 组件处理
-
-// 排序：默认按执行开始时间倒序（最近执行的在前）
 const sortField = ref('start')
 const sortOrder = ref('desc')
 function onSortChange({ prop, order }) {
@@ -54,15 +47,12 @@ async function load() {
     loading.value = false
   }
 }
-// 条件变化自动刷新：下拉立即、名称 300ms 去抖
 watch([statusFilter, typeFilter], () => { page.value = 1; load() })
 watch(qFilter, () => { clearTimeout(qTimer); qTimer = setTimeout(() => { page.value = 1; load() }, 300) })
 onMounted(() => { load() })
-// 其它页面发生动作（触发/中止）后，本页刷新一次
 watch(refreshTick, () => load())
 
 function open(run) { openRun(run.id) }
-// 勾选列点击不打开详情，其余格子点击打开
 function onRowClick(row, column) {
   if (column.type === 'selection') return
   open(row)
@@ -81,7 +71,7 @@ async function onBatchDelete() {
       type: 'warning',
     })
   } catch (e) {
-    return // 用户取消
+    return
   }
   deleting.value = true
   try {
@@ -99,7 +89,6 @@ async function onBatchDelete() {
 
 <template>
   <div class="page">
-    <!-- 搜索栏 -->
     <el-card shadow="never" class="toolbar">
       <el-form inline @submit.prevent>
         <el-form-item label="任务类型">
@@ -122,7 +111,6 @@ async function onBatchDelete() {
       </el-form>
     </el-card>
 
-    <!-- 数据表：AutoTablePanel 统一处理高度/行高铺满/分页 -->
     <AutoTablePanel :data="runs" v-loading="loading" @sort-change="onSortChange"
                     :page="page" :total="total" :page-size="pageSize"
                     @change="p => { page = p; load() }"

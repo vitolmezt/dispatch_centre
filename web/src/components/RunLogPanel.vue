@@ -2,27 +2,19 @@
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { streamRunLog, fetchRun } from '../api'
 
-/**
- * 服务组成员实时日志面板。
- * 成员正在运行时，通过 SSE /api/runs/{id}/stream 订阅该 run 的实时输出并滚动展示。
- * run 结束（含秒失败）时收到 end 哨兵，自动把面板切到结束状态，并拉最新 run 详情
- * 显示真实状态与人类可读的错误原因。
- * 每个面板可独立启动/停止该成员，便于只重启某个服务而不用动整个组。
- */
 const props = defineProps({
   member: Object,
 })
 const emit = defineEmits(['start', 'stop'])
 
 const lines = ref([])
-const ended = ref(false)          // 该 run 是否已收到结束哨兵
-const endStatus = ref('')         // 结束时从最新 run 详情读到的真实状态（FAILED/KILLED…）
-const endError = ref('')          // 结束时从最新 run 详情读到的错误原因（人类可读）
+const ended = ref(false)
+const endStatus = ref('')
+const endError = ref('')
 const body = ref(null)
 let stream = null
 
 function scrollToBottom() {
-  // DOM 已更新后，把滚动条钉到最底部，跟随最新输出
   nextTick(() => { if (body.value) body.value.scrollTop = body.value.scrollHeight })
 }
 
@@ -39,7 +31,6 @@ async function subscribe() {
     onLine: (l) => { lines.value.push(l); scrollToBottom() },
     onEnd: async () => {
       ended.value = true
-      // run 已结束：拉最新详情拿到真实状态与错误原因（失败/中止…），避免停留快照的 RUNNING
       try {
         const d = await fetchRun(rid)
         endStatus.value = d?.status || endStatus.value
@@ -52,7 +43,6 @@ async function subscribe() {
   })
 }
 
-// 成员 run_id 变化（重启/停止）时重新订阅
 watch(() => props.member?.run_id, subscribe)
 onMounted(subscribe)
 onUnmounted(() => stream?.close?.())
@@ -61,7 +51,6 @@ const busy = ref(false)
 async function onStart() { busy.value = true; try { await emit('start', props.member) } finally { busy.value = false } }
 async function onStop() { busy.value = true; try { await emit('stop', props.member) } finally { busy.value = false } }
 
-// 状态翻译：把英文状态/退出码转成人话
 const STATE_LABELS = {
   SUCCEEDED: '已完成', KILLED: '已中止', TIMEDOUT: '已超时',
   FAILED: '执行失败', RUNNING: '运行中', PENDING: '待启动',
@@ -132,7 +121,6 @@ function statusText() {
 .run-log-pid { margin-left: auto; color: var(--muted); font-family: Consolas, monospace; font-size: 12px; }
 .run-log-ops { display: flex; gap: 6px; margin-left: 12px; }
 .run-log-body {
-  /* 固定高度 + 内部滚动：日志超长内部滚动、不再撑开面板 */
   height: 37vh; overflow: auto; overscroll-behavior: contain;
   padding: 8px 12px; font-family: Consolas, Menlo, monospace; font-size: 12px; line-height: 1.5;
   box-sizing: border-box;

@@ -40,31 +40,22 @@ export function triggerLabel(key) {
   return t('TRIGGER', key, key)
 }
 export function enabledLabel(key) {
-  // 输入为 boolean 或 'ON'/'OFF'
   const k = key === true ? 'ON' : key === false ? 'OFF' : key
   return t('ENABLED', k, key == null ? '' : String(key))
 }
 
 export { dict as groups }
 
-/**
- * 把标准 5 段 cron（分 时 日 月 周）翻译成一段中文"大概什么时候跑"的描述，
- * 用于任务详情里快速查看定时情况。常见规则都能翻译，无法解析时返回 null
- * （由调用处决定回退显示原始 cron）。
- *
- * 支持：* 、步进(星 斜杠 N)、a、a-b、a/b、逗号列表，以及月份/星期英文名 JAN-DEC / SUN-SAT。
- */
 const _MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 const _DOW_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
 const _CN_DOW = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
-/** 把单个字段解析为 { type:'every'|'everyN'|'everyNfrom'|'set', ... } */
 function _parseField(field, rangeMax, names) {
   field = (field || '').trim().toLowerCase()
   if (field === '*' || field === '?') return { type: 'every' }
   const star = field.match(/^\*\/(\d+)$/)
   if (star) return { type: 'everyN', n: parseInt(star[1], 10) }
-  const req = field.match(/^(\d+)\/(\d+)$/) // a/b（从 a 起，每 b）—— 仅其余全 * 时视作步进
+  const req = field.match(/^(\d+)\/(\d+)$/)
   const vals = []
   for (const part of field.split(',')) {
     const rm = part.match(/^(\w+)-(\w+)(?:\/(\d+))?$/)
@@ -82,7 +73,6 @@ function _parseField(field, rangeMax, names) {
     if (tv != null) vals.push(tv)
   }
   if (!vals.length) return { type: 'set', values: [] }
-  // a/b 且无其它成员
   if (req && vals.length === 0) {
     return { type: 'everyNfrom', n: +req[2], start: +req[1] }
   }
@@ -102,13 +92,11 @@ function _tokenVal(tok, names) {
 
 function _isAny(f) { return f && f.type === 'every' }
 
-/** 小时/分拼接成 "H:MM" 文本（小时可能为 0 前导）。 */
 function _timeText(hours, min) {
   const hh = (Array.isArray(hours) ? hours : [hours]).map(h => String(h).padStart(2, '0')).join('/')
   return `${hh}:${String(min).padStart(2, '0')}`
 }
 function _hoursCtx(ph) {
-  // 返回 {kind:'peak', value} 或 {kind:'set', list}
   if (ph.type === 'set') return { kind: 'set', list: ph.values }
   if (ph.type === 'everyN') return { kind: 'everyN', n: ph.n }
   if (ph.type === 'everyNfrom') return { kind: 'stepFrom', n: ph.n, start: ph.start }
@@ -116,7 +104,6 @@ function _hoursCtx(ph) {
 }
 function _dowCtx(pw) {
   if (pw.type === 'set') {
-    // 判断是否就是"工作日" 1-5
     const arr = pw.values
     if (arr.length === 5 && JSON.stringify(arr) === JSON.stringify([1, 2, 3, 4, 5])) return { kind: 'weekdays' }
     if (arr.length === 2 && JSON.stringify(arr) === JSON.stringify([0, 6])) return { kind: 'weekend' }
@@ -125,7 +112,6 @@ function _dowCtx(pw) {
   return { kind: 'every' }
 }
 
-/** 主翻译. */
 export function cronToHuman(cron) {
   const s = (cron || '').trim()
   if (!s) return ''
@@ -141,14 +127,12 @@ export function cronToHuman(cron) {
   const anyM = _isAny(pmo)
   const anyW = _isAny(pw)
 
-  // ---------- 全部 any（只有分钟/小时参与） ----------
   if (anyD && anyM && anyW && _isAny(ph)) {
     if (pm.type === 'every') return '每分钟'
     if (pm.type === 'everyN') return `每 ${pm.n} 分钟`
     if (pm.type === 'everyNfrom') return `从第 ${pm.start} 分钟起每 ${pm.n} 分钟`
   }
 
-  // 小时为步进/集合、分整点 0 -> 每N小时 / 每天某点 / 每小时整点
   if (anyD && anyM && anyW && pm.type === 'set' && pm.values.length === 1 && pm.values[0] === 0) {
     const hc = _hoursCtx(ph)
     if (hc.kind === 'everyN') return `每 ${hc.n} 小时整点`
@@ -157,34 +141,28 @@ export function cronToHuman(cron) {
     if (hc.kind === 'every') return '每小时整点'
   }
 
-  // 分钟集合、小时 any、日任意 -> 每小时 (M1[,M2] 分)
   if (anyD && anyM && anyW && _isAny(ph) && pm.type === 'set') {
     const mm = pm.values.map(v => String(v).padStart(2, '0')).join('、')
     return pm.values.length === 1 ? `每小时 ${String(pm.values[0]).padStart(2, '0')} 分` : `每小时 ${mm} 分`
   }
 
-  // 需要时刻：hour set + minute set
   const needTime = pm.type === 'set' && ph.type === 'set' && pm.values.length && ph.values.length
 
-  // 每天：M H * * *
   if (needTime && anyD && anyM && anyW) {
     return `每天 ${_timeText(ph.values, pm.values[0])}`
   }
-  // 每周：M H * * W
   if (needTime && anyD && anyM && !anyW) {
     const dow = _dowCtx(pw)
     if (dow.kind === 'weekdays') return `每周一至周五 ${_timeText(ph.values, pm.values[0])}`
     if (dow.kind === 'weekend') return `每周六、周日 ${_timeText(ph.values, pm.values[0])}`
     if (dow.kind === 'list') return `每周${dow.list.map(i => _CN_DOW[i]).join('、')} ${_timeText(ph.values, pm.values[0])}`
   }
-  // 每月：M H D * *
   if (needTime && !anyD && anyM && anyW) {
     const doms = pd.values.map(v => v + '日').join('、')
     return pd.values.length > 1
       ? `每月${doms} ${_timeText(ph.values, pm.values[0])}`
       : `每月 ${pd.values[0]} 日 ${_timeText(ph.values, pm.values[0])}`
   }
-  // 每年：M H * M *
   if (needTime && anyD && !anyM && anyW) {
     const mons = pmo.values.map(v => v + '月').join('、')
     return (pmo.values.length > 1 ? `每年${mons}` : `每年 ${pmo.values[0]} 月`) + ` ${_timeText(ph.values, pm.values[0])}`

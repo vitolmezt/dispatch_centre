@@ -19,8 +19,6 @@ const qFilter = ref('')
 const statusFilter = ref('')
 
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
-// Phase 2 · 执行中心状态筛选：按目标状态隔离（含异常状态 ORPHANED/UNKNOWN/STARTING）。
-// 后端 /api/running 原生支持 status 过滤，分页总条数与筛选一致。
 const statusOptions = [
   { v: '', l: '全部状态' },
   { v: 'RUNNING', l: '正常运行' },
@@ -28,9 +26,7 @@ const statusOptions = [
   { v: 'ORPHANED', l: '孤儿' },
   { v: 'UNKNOWN', l: '待核查' },
 ]
-// 表格自适应高度 + 行高铺满统一由 AutoTablePanel 组件处理
 
-// 排序：默认按开始时间倒序（新启动的在最前）
 const sortField = ref('start')
 const sortOrder = ref('desc')
 function onSortChange({ prop, order }) {
@@ -58,7 +54,7 @@ async function load() {
   }
 }
 
-// Phase 2 · 执行中心分桶统计：正常/待处理(ORPHANED)/待核查(UNKNOWN+STARTING)
+
 const stats = computed(() => {
   const c = counts.value || {}
   return {
@@ -69,21 +65,19 @@ const stats = computed(() => {
   }
 })
 
-// 条件变化自动刷新：下拉立即、名称 300ms 去抖
 let qTimer = null
 watch(typeFilter, () => { page.value = 1; load() })
 watch(statusFilter, () => { page.value = 1; load() })
 watch(qFilter, () => { clearTimeout(qTimer); qTimer = setTimeout(() => { page.value = 1; load() }, 300) })
 
 onMounted(() => { load() })
-// 其它页面发生动作（触发/中止）后，本页刷新一次
+
 watch(refreshTick, () => load())
 
 async function onAbort(run) {
   try {
     await abortRun(run.id)
-    // 不在本地弹提示，后端中止成功的 finished 事件会经 SSE 弹出「已中止」
-    bump() // 通知其他列表页刷新
+    bump()
     await load()
   } catch (e) {
     toast.error('中止失败: ' + (e?.response?.data?.detail || e.message))
@@ -91,7 +85,6 @@ async function onAbort(run) {
 }
 function open(run) { openRun(run.id) }
 
-// Phase 2 · 状态角标样式归类（都走 constants 翻译，样式按状态分组）
 const STATUS_CLASS = {
   RUNNING: 'RUNNING',
   STARTING: 'STARTING',
@@ -104,7 +97,6 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
 
 <template>
   <div class="page">
-    <!-- 搜索栏 -->
     <el-card shadow="never" class="toolbar">
       <el-form inline @submit.prevent>
         <el-form-item label="任务类型">
@@ -123,7 +115,6 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
       </el-form>
     </el-card>
 
-    <!-- Phase 2 · 分桶汇总：正常运行 / 待处理(ORPHANED) / 待核查(UNKNOWN+STARTING) -->
     <el-card shadow="never" class="statbar">
       <div class="stat">
         <span class="stat-num">{{ stats.running }}</span>
@@ -143,7 +134,6 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
       </div>
     </el-card>
 
-    <!-- 数据表：AutoTablePanel 统一处理高度/行高铺满/分页 -->
     <AutoTablePanel :data="runs" v-loading="loading" @sort-change="onSortChange"
                     :page="page" :total="total" :page-size="pageSize"
                     @change="p => { page = p; load() }"

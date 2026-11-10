@@ -190,10 +190,7 @@ def _load_long_term_token() -> str:
 
 
 def _lockdown_keyfile(path: Path):
-    """收紧密钥文件访问权限（Windows）：去掉继承，仅保留当前用户 + SYSTEM + Administrators.
 
-    防止 data 目录被放宽时普通用户仍能读到密钥。非 Windows 或无 icacls 时静默降级。
-    """
     if not platform.system() == "Windows":
         return
     try:

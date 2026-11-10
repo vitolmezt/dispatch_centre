@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""操作审计（阶段 1 安全加固）.
 
-- 记录操作者、时间、操作对象、操作类型、结果。
-- 绝不记录 Token、密码等敏感字段。
-- 落盘到 data/audit.log（追加）。单机规模足够；不引第三方依赖。
-"""
 from __future__ import annotations
 
 import logging

@@ -5,10 +5,6 @@ import uvicorn
 
 
 class _ColorFormatter(logging.Formatter):
-    """带 ANSI 颜色的 Formatter：levelname 与 message 按级别配色.
-
-    仅当 stdout 是终端时启用彩色；重定向到文件/管道时自动退回纯文本。
-    """
 
     _LEVEL_COLORS = {
         "DEBUG": "36",     # 青
@@ -30,14 +26,12 @@ class _ColorFormatter(logging.Formatter):
         code = self._LEVEL_COLORS.get(record.levelname)
         color = f"\033[{code}m" if code else ""
         orig_lv = record.levelname
-        # 先按原格式算出纯文本消息（这会消费 record.args）
         try:
             orig_msg = record.getMessage()
         except Exception:
             orig_msg = record.msg
         record.levelname = f"{color}{orig_lv}{self._RESET}"
         record.msg = f"{color}{orig_msg}{self._RESET}"
-        # 关键：清空 args，避免 super().format() 再次对已填色的 msg 做 % 运算
         record.args = ()
         try:
             return super().format(record)
@@ -54,7 +48,6 @@ if __name__ == "__main__":
         log_level="info",
         access_log=True,
         log_config={
-            # 访问/默认日志加时间戳 + ANSI 颜色（仅终端彩色）。
             "version": 1,
             "disable_existing_loggers": False,
             "formatters": {

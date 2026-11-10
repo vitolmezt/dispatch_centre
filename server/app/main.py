@@ -1,14 +1,3 @@
-"""FastAPI 入口：启动调度服务，暴露 REST API.
-
-设计：调度中心=菜单+状态看板。
-  - GET  /api/jobs        可调度菜单项
-  - GET  /api/running     运行中
-  - GET  /api/history     执行历史（可过滤 status/job）
-  - POST /api/jobs/{name}/trigger  手动触发
-  - POST /api/runs/{id}/abort      中止运行
-  - POST /api/runs/{id}/stop       停止 detach 后台进程（按 PID）
-  - GET  /api/config      服务器启动配置信息
-"""
 from __future__ import annotations
 
 import json
@@ -37,7 +26,6 @@ def s_job_param_schema():
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scheduler-center")
 
-# 默认路径
 BASE_DIR = Path(__file__).resolve().parent.parent  # server/
 DEFAULT_CONFIG = os.environ.get("SC_CONFIG", str(BASE_DIR / "config" / "jobs.json"))
 DEFAULT_DB = os.environ.get("SC_DB", str(BASE_DIR / "data" / "scheduler.db"))
@@ -69,13 +57,10 @@ app = FastAPI(
     ),
 )
 
-# 允许跨域来源：由 SC_ALLOW_ORIGINS（逗号分隔）显式配置。
-# 生产配置必须给出真实 Origin；不提供通配符回退（阶段1安全加固）。
 def _cors_origins():
     raw = os.environ.get("SC_ALLOW_ORIGINS", "")
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
-    # 默认仅回环地址（本地开发/本机部署），不含通配符
     return [
         "http://localhost:5173", "http://127.0.0.1:5173",
         "http://localhost:8000", "http://127.0.0.1:8000",
@@ -112,7 +97,6 @@ def _shutdown():
         _scheduler.shutdown()
 
 
-# ---------- 菜单 ----------
 @app.get("/api/jobs", dependencies=[Depends(auth.auth_required)])
 def list_jobs(type: Optional[str] = Query(None, alias="type"),
               enabled: Optional[str] = Query(None),
@@ -122,12 +106,6 @@ def list_jobs(type: Optional[str] = Query(None, alias="type"),
               page: int = Query(1, ge=1),
               page_size: int = Query(50, ge=1, le=500),
               all: bool = Query(False)):
-    """菜单：按 类型(enabled 常量 key) / 启用 / 名称模糊 搜索 + 分页.
-
-    - sort / order：排序字段与方向（默认按创建时间倒序，新任务在前）
-    - all=true：忽略分页返回全部（兼容旧调用）
-    返回 {total, page, page_size, items}
-    """
     s = get_scheduler()
     if all:
         items = s.jobs_view(sort=sort, order=order)
@@ -137,15 +115,12 @@ def list_jobs(type: Optional[str] = Query(None, alias="type"),
                            offset=offset, limit=page_size)
     return {"total": result["total"], "page": page, "page_size": page_size, "items": result["items"]}
 
-
-# ---------- 任务 CRUD（不再依赖 jobs.json，jobs 存于数据库 jobs 表） ----------
 def _job_err(detail: str) -> HTTPException:
     return HTTPException(status_code=400, detail=detail)
 
 
 @app.post("/api/jobs", dependencies=[Depends(auth.auth_required)])
 def create_job(payload: dict = Body(...)):
-    """新增一条任务。payload 结构同旧 jobs.json 条目：{name,type,params,schedule,timeout_s,enabled,description}."""
     s = get_scheduler()
     job = Job.from_dict(payload)
     errs = job.validate()
@@ -160,13 +135,12 @@ def create_job(payload: dict = Body(...)):
 
 @app.put("/api/jobs/{name}", dependencies=[Depends(auth.auth_required)])
 def update_job(name: str, payload: dict = Body(...)):
-    """更新一条任务（按完整覆盖：name 不可改名，其余字段整体替换）."""
     s = get_scheduler()
     old = s.jobs.get(name)
     if old is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
     data = dict(payload)
-    data["name"] = name  # name 作为主键，不可通过 payload 改名
+    data["name"] = name
     job = Job.from_dict(data)
     errs = job.validate()
     if errs:
@@ -188,7 +162,6 @@ def delete_job(name: str):
 
 @app.post("/api/jobs/{name}/enable", dependencies=[Depends(auth.auth_required)])
 def toggle_job(name: str, payload: dict = Body(...)):
-    """启用/停用一条任务。payload: {enabled: bool}."""
     s = get_scheduler()
     job = s.jobs.get(name)
     if job is None:
@@ -197,7 +170,6 @@ def toggle_job(name: str, payload: dict = Body(...)):
     try:
         s.set_job_enabled(name, enabled)
     except ValueError as e:
-        # 正在执行的任务不允许停用
         raise HTTPException(status_code=409, detail=str(e))
     audit.audit("job.enable", obj=name, detail=f"enabled={enabled}")
     return {"ok": True, "name": name, "enabled": enabled}
@@ -205,26 +177,21 @@ def toggle_job(name: str, payload: dict = Body(...)):
 
 @app.get("/api/job-schema", dependencies=[Depends(auth.auth_required)])
 def job_schema():
-    """任务类型 -> 参数表单结构（前端据此动态渲染配置表单，无需硬编码）."""
     return {"types": constants.JOB_TYPE, "schemas": s_job_param_schema()}
 
 
 @app.get("/api/groups", dependencies=[Depends(auth.auth_required)])
 def list_groups():
-    """任务分组元信息（crawler 风格），供前端按分组分区展示."""
     return get_scheduler().groups_view()
 
 
-# ---------- 服务组（一键启动/停止一组常驻服务） ----------
 @app.get("/api/service-groups", dependencies=[Depends(auth.auth_required)])
 def list_service_groups():
-    """服务组列表（含每成员实时运行状态）."""
     return get_scheduler().service_groups_view()
 
 
 @app.post("/api/service-groups", dependencies=[Depends(auth.auth_required)])
 def create_service_group(payload: dict = Body(...)):
-    """新增一个服务组. payload: {name, members:[{job_name,label,order}], description}."""
     s = get_scheduler()
     group = ServiceGroup.from_dict(payload)
     errs = group.validate()
@@ -239,7 +206,6 @@ def create_service_group(payload: dict = Body(...)):
 
 @app.put("/api/service-groups/{name}", dependencies=[Depends(auth.auth_required)])
 def update_service_group(name: str, payload: dict = Body(...)):
-    """整体更新一个服务组（name 为主键不可改名）."""
     s = get_scheduler()
     if name not in s.service_groups:
         raise HTTPException(status_code=404, detail=f"服务组不存在: {name}")
@@ -266,7 +232,6 @@ def delete_service_group(name: str):
 
 @app.post("/api/service-groups/{name}/start", dependencies=[Depends(auth.auth_required)])
 def start_service_group(name: str):
-    """一键启动服务组内所有成员（常驻 detach），按 order 顺序拉起."""
     res = get_scheduler().start_service_group(name)
     if not res.get("ok"):
         raise HTTPException(status_code=404 if res.get("reason") == "not_found" else 400,
@@ -277,7 +242,6 @@ def start_service_group(name: str):
 
 @app.post("/api/service-groups/{name}/stop", dependencies=[Depends(auth.auth_required)])
 def stop_service_group(name: str):
-    """一键停止服务组内所有正在运行的成员（按 PID 整树 kill）."""
     res = get_scheduler().stop_service_group(name)
     if not res.get("ok"):
         raise HTTPException(status_code=404 if res.get("reason") == "not_found" else 400,
@@ -288,7 +252,6 @@ def stop_service_group(name: str):
 
 @app.get("/api/service-groups/{name}", dependencies=[Depends(auth.auth_required)])
 def service_group_detail(name: str):
-    """单个服务组详情（含每成员当前运行状态）."""
     s = get_scheduler()
     group = s.service_groups.get(name)
     if group is None:
@@ -296,13 +259,12 @@ def service_group_detail(name: str):
     return s._service_group_view(group)
 
 
-# ---------- 运行中 ----------
 @app.get("/api/running", dependencies=[Depends(auth.auth_required)])
 def list_running(type: Optional[str] = Query(None, alias="type"),
                  q: Optional[str] = Query(None),
                  status: Optional[str] = Query(None),
-                 sort: Optional[str] = Query(None),     # start | name，默认 start
-                 order: Optional[str] = Query("desc"),   # asc | desc
+                 sort: Optional[str] = Query(None),
+                 order: Optional[str] = Query("desc"),
                  page: int = Query(1, ge=1),
                  page_size: int = Query(100, ge=1, le=1000)):
     result = get_scheduler().running_view(job_type=type, q=q, status=status,
@@ -312,14 +274,12 @@ def list_running(type: Optional[str] = Query(None, alias="type"),
             "items": result["items"], "alive_total": result["alive_total"],
             "counts": result["counts"]}
 
-
-# ---------- 历史 ----------
 @app.get("/api/history", dependencies=[Depends(auth.auth_required)])
 def history(status: Optional[str] = None, job: Optional[str] = None,
             type: Optional[str] = Query(None, alias="type"),
             q: Optional[str] = None,
-            sort: Optional[str] = Query(None),     # start | name，默认 start
-            order: Optional[str] = Query("desc"),   # asc | desc
+            sort: Optional[str] = Query(None),
+            order: Optional[str] = Query("desc"),
             page: int = Query(1, ge=1),
             page_size: int = Query(50, ge=1, le=500),
             all: bool = Query(False)):
@@ -336,7 +296,6 @@ def history(status: Optional[str] = None, job: Optional[str] = None,
 @app.get("/api/runs/{run_id}", dependencies=[Depends(auth.auth_required)])
 def run_detail(run_id: str):
     s = get_scheduler()
-    # 运行中实例优先返回内存中的实时日志；否则读取数据库。
     mem = s.get_running(run_id)
     if mem is not None:
         return mem.to_dict(include_log=True)
@@ -346,15 +305,8 @@ def run_detail(run_id: str):
     return run.to_dict(include_log=True)
 
 
-# ---------- 触发 / 中止 ----------
 @app.post("/api/jobs/{name}/trigger", dependencies=[Depends(auth.auth_required)])
 def trigger_job(name: str):
-    """手动触发一次。
-
-    - 409：任务正在运行（全局并发上限=1，拒绝重复触发）
-    - 403：任务已停用
-    - 404：任务不存在
-    """
     result = get_scheduler().trigger(name)
     if result is None:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -377,11 +329,6 @@ def abort_run(run_id: str, request: Request):
 
 @app.post("/api/runs/{run_id}/stop", dependencies=[Depends(auth.auth_required)])
 def stop_run(run_id: str, request: Request):
-    """停止一个以 detach 方式启动的后台进程（按记录的 PID 用 taskkill 精准 kill）.
-
-    用于解决“调度中心关闭后 dsh web 等后台进程成为孤儿、找不到窗口关不掉”的问题：
-    前端点“停止”，后端读该 run 持久化的 PID，taskkill /F /PID 精准终止。
-    """
     result = get_scheduler().stop(run_id)
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail="找不到该运行记录")
@@ -392,10 +339,8 @@ def stop_run(run_id: str, request: Request):
 
 @app.delete("/api/history", dependencies=[Depends(auth.auth_required)])
 def delete_history(payload: dict = Body(...)):
-    """批量删除执行历史. payload: {"ids": [run_id, ...]} 或 {"all": true} 清空全部."""
     s = get_scheduler()
     if payload.get("all"):
-        # 全清：删除所有历史记录（运行中的实例本就只存内存、不在库中）.
         rows = s.store.query_runs(limit=200000)
         n = s.store.delete_runs([r.id for r in rows])
     else:
@@ -408,35 +353,21 @@ def delete_history(payload: dict = Body(...)):
     return {"ok": True, "deleted": n}
 
 
-# ---------- 全局常量字典 ----------
 @app.get("/api/constants")
 def constants_dict():
-    """一次性下发全部分组的枚举字典 + 后端能力开关，前端拉取后作为全局常量映射.
-
-    返回形如 {"groups": {"STATUS": {"PENDING": "待开始", ...}, ...},
-              "capabilities": {"fsPick": bool}}
-    """
     return {
         "groups": constants.ALL_GROUPS,
         "capabilities": {"fsPick": True},
     }
 
 
-# ---------- 健康 / 配置信息 ----------
 @app.get("/api/health")
 def health():
     return {"status": "ok", "running": len(get_scheduler().running)}
 
 
-# ---------- 认证：登录 / 登出（阶段1） ----------
 @app.post("/api/login")
 def login(payload: dict = Body(...), request: Request = None):
-    """校验长期管理凭证，签发短期会话 token；含来源 IP 失败限流与冷却.
-
-    body: { token: "长期凭证" }
-    成功 → { token, expires_in, configured: true }；失败 → 401（限流冷却期亦 401）
-    设计：长期凭证不落日志；登录成功/失败仅记操作，不记录凭证本身。
-    """
     ip = auth.client_ip(request) if request else "unknown"
     remaining = auth.login_locked(ip)
     if remaining > 0:
@@ -459,7 +390,6 @@ def login(payload: dict = Body(...), request: Request = None):
 
 @app.post("/api/logout", dependencies=[Depends(auth.auth_required)])
 def logout(request: Request):
-    """主动退出：吊销当前会话."""
     sid = _bearer_token(request)
     if sid:
         auth.revoke_session(sid)
@@ -469,7 +399,6 @@ def logout(request: Request):
 
 @app.get("/api/audit", dependencies=[Depends(auth.auth_required)])
 def audit_logs(limit: int = Query(200, ge=1, le=5000)):
-    """读取最近操作审计（不含敏感信息）."""
     return {"items": audit.read_recent(limit=limit)}
 
 
@@ -481,14 +410,8 @@ def _bearer_token(request: Request) -> str:
     return ""
 
 
-# ---------- 实时事件推送（SSE） ----------
 @app.get("/api/events", dependencies=[Depends(auth.auth_required)])
 def events():
-    """Server-Sent Events：任务开始/结束/中止时实时推送，前端据此即时刷新状态.
-
-    返回 Content-Type: text/event-stream。用普通生成器在线程池运行，
-    避免阻塞事件循环影响其它 API 请求。客户端断开则停止迭代并清理订阅。
-    """
     s = get_scheduler()
     q = s.subscribe()
 
@@ -519,13 +442,6 @@ def config_info():
 # ---------- 实时日志流（按 run 定向 SSE） ----------
 @app.get("/api/runs/{run_id}/stream", dependencies=[Depends(auth.auth_required)])
 def run_log_stream(run_id: str):
-    """Server-Sent Events：某 run 运行中的实时日志，按行推送。
-
-    - 先推送该 run 当前已收集的日志（内存/归档文件），
-    - 之后每新一行实时推一条 {type:"log", line}，
-    - run 结束推 {type:"log", end:true} 后关闭连接。
-    仅当该 run 运行中时，连接才有意义；历史 run 直接走 /api/runs/{id}（含 log）。
-    """
     s = get_scheduler()
 
     # 若是历史（不在运行中），直接以结束哨兵收尾，避免空等
@@ -547,10 +463,8 @@ def run_log_stream(run_id: str):
     def gen():
         try:
             yield "retry: 3000\n\n"
-            # 先回放当前已收集的日志
             for line in (mem.log if mem else []):
                 yield "data: " + json.dumps({"type": "log", "run_id": run_id, "line": line}, ensure_ascii=False) + "\n\n"
-            # 再持续接收新增行，直到收到结束哨兵
             while True:
                 try:
                     payload = q.get(timeout=15)
@@ -567,18 +481,13 @@ def run_log_stream(run_id: str):
                                       "Connection": "keep-alive",
                                       "X-Accel-Buffering": "no"})
 
-
-# ---------- 选择本机路径（系统原生对话框） ----------
-# 浏览器出于安全无法拿到真实本地路径，故由「后端」在本机桌面弹出
-# 系统原生文件/文件夹选择框（tkinter.filedialog），把选中的真实绝对
-# 路径返回给前端填回表单。对话框会阻塞，故放后台线程并用队列回传。
 def _run_native_picker(kind: str, title: str, initial: str, out: "queue.Queue"):
     try:
         import tkinter as tk
         from tkinter import filedialog
 
         root = tk.Tk()
-        root.withdraw()  # 隐藏空主窗口，只显示选择框
+        root.withdraw()
         root.attributes("-topmost", True)
         try:
             if kind == "dir":
@@ -589,21 +498,12 @@ def _run_native_picker(kind: str, title: str, initial: str, out: "queue.Queue"):
         finally:
             root.destroy()
         out.put({"ok": True, "path": path or ""})
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         out.put({"ok": False, "error": str(e)})
 
 
 @app.post("/api/fs/pick", dependencies=[Depends(auth.auth_required)])
 def fs_pick(payload: dict = Body(...)):
-    """在后端主机桌面弹出系统原生「打开/选文件夹」对话框，返回真实绝对路径.
-
-    body: { kind: "file" | "dir", title?: str, initial?: str }
-    返回: { path }（用户取消时 path 为空字符串）；出错返回 500。
-
-    运行环境要求：需在后端主机可弹出的桌面会话（tkinter）中运行；
-    若后端运行环境无图形界面（如无桌面/远程无会话），返回 500 并给出清晰提示。
-    已认证管理员即可调用，无需任何开关。
-    """
     kind = "file" if payload.get("kind") not in ("file", "dir") else payload["kind"]
     title = payload.get("title") or ("请选择文件" if kind == "file" else "请选择文件夹")
     initial = payload.get("initial") or ""
@@ -611,7 +511,6 @@ def fs_pick(payload: dict = Body(...)):
     out: "queue.Queue" = queue.Queue()
     threading.Thread(target=_run_native_picker, args=(kind, title, initial, out), daemon=True).start()
     try:
-        # 用户可能长时间在对话框内操作，最多等 10 分钟
         res = out.get(timeout=600)
     except queue.Empty:
         raise HTTPException(status_code=408, detail="选择超时")

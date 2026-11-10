@@ -1,21 +1,4 @@
-"""Phase 2 · 进程身份与安全停止（跨平台）.
 
-设计宗旨（修订版 3）：
-- 身份凭据 = pid + 进程创建时刻 + 可执行路径 + 命令行指纹 + 进程组/树根。
-  Windows 创建时刻用 GetProcessTimes 原始 FILETIME；Linux 用 /proc/<pid>/stat 第22项
-  starttime(ticks) + /proc/sys/kernel/random/boot_id。零容忍比对——任何一项凭据不符
-  即判定“不是同一进程”（PID 复用防护），绝不只凭 PID 就发信号。
-- 唯一“进程是否死亡”的判定权威 = OS 进程探针（pid + 身份凭据 + 存活状态）。
-  心跳(last_heartbeat)只是“管理链路活性”的记录，绝不单独据此断言进程死亡。
-- 安全停止：
-    Windows 优先“方式A：仅PID”→二次身份核验→灌注 H。风险提示：Job Object 句柄在调度器
-    重启后无法重新取得（云管控的程序不会自动带出 Job），故重启后丢失 Job 关联的进程
-    **不得虚假标记为“已正常接管”**——按规则换算为未接管/待核查状态（调用方决定），
-    而不是谎报成功。
-    Linux：能开 pidfd(os.pidfd_open) 且兼容时，走“开句柄→核验身份→fd 发信号”；否则退回
-    进程组/孤儿组机制 + 事前身份核验。threading.Lock 无法消除 OS 层 PIP/SID 复用竞态——
-    只能靠“身份凭据匹配 + 紧邻发送”把窗口压到最小，绝不承认“证明不了归属就杀”的逻辑。
-"""
 from __future__ import annotations
 
 import hashlib

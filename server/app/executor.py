@@ -180,7 +180,6 @@ class Executor:
             if job.params.get("env"):
                 env.update({str(k): str(v) for k, v in job.params["env"].items()})
             cwd_env = job.params.get("workdir") or None
-            # 后台常驻：进程独立存活，状态保持“进行中”，不启用超时，但照样读日志、可中止。
             detach = bool(job.params.get("detach", False))
 
             proc = subprocess.Popen(
@@ -190,17 +189,15 @@ class Executor:
                 stdin=subprocess.DEVNULL,
                 cwd=cwd_env,
                 env=env,
-                # 不启用 text：以原始字节读取，行进解码时自动识别 UTF-8/GBK，根治中文乱码
                 bufsize=1,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 if Executor._is_windows()
                 else 0,
             )
             run.pid = proc.pid
-            # Phase 2 · 身份采集（STARTING -> RUNNING 的凭据基础）：
-            #   spawn 后立即采集 OS 身份快照并写入 run，管理和恢复才能可靠区分"同一进程"。
+
             run.detached = detach
-            run.process_group_id = None  # 由 capture_identity 填写真实组/树根（不假设==pid）
+            run.process_group_id = None
             ident = identity_mod.capture_identity(
                 proc.pid, cmdline=argv,
                 own_exe_hint=(argv[0] if argv else None),
@@ -209,7 +206,6 @@ class Executor:
             run.executable_path = ident["executable_path"]
             run.command_line_fingerprint = ident["command_line_fingerprint"]
             run.process_group_id = ident["process_group_id"]
-            # 身份凭据必须采集成功；否则绝不允许盲跑（无法做安全停止/恢复）
             if not run.process_create_time:
                 run.status = "INTERRUPTED"
                 run.error = "无法采集进程创建时刻（身份凭据），已按安全规则拒绝继续"
@@ -219,7 +215,6 @@ class Executor:
                 self._procs[run.id] = proc
             self.runner.on_started(run)
 
-            # 超时定时器（后台常驻进程不上超时，随服务一直跑）
             if not detach and job.timeout_s and job.timeout_s > 0:
                 timer = threading.Timer(
                     job.timeout_s, self._on_timeout, args=(proc, run)
@@ -227,7 +222,6 @@ class Executor:
                 timer.daemon = True
                 timer.start()
 
-            # 阻塞读输出（常驻进程也照样抓日志，供执行中心实时查看）
             if proc.stdout:
                 for raw in proc.stdout:
                     line = _decode_line(raw)
@@ -235,19 +229,13 @@ class Executor:
                         self.runner.on_log(run, line)
             proc.wait()
             run.exit_code = proc.returncode
-            # 中止/超时（KILLED/TIMEDOUT）/ 用户主动停止，都不再按退出码覆盖状态
-            # （否则 taskkill 强杀的退出码 1 会把"主动停止"误标为 FAILED）
             was_user_stopped = run.id in self._user_stopped
             if run.status not in ("KILLED", "TIMEDOUT") and not was_user_stopped:
-                # 身份复核：收尾时以 OS 探针确认该进程确实已不在运行（pid 已回收，
-                # 或创建时刻不再匹配）。避免"进程仍在跑、只是读线程误判"的竞态。
                 self._verify_exit_was_external(run)
                 if proc.returncode == 0:
                     run.status = "SUCCEEDED"
                     run.error = ""
                 else:
-                    # 选项A：未登记用户停止 + 非0退出 -> 一律 INTERRUPTED，
-                    # 语义为"非正常终止"，不武断归 FAILED；原因写清以便排查。
                     run.status = "INTERRUPTED"
                     run.interrupted_reason = (
                         f"进程非 0 退出（exit={proc.returncode}）且非调度中心主动停止，"
@@ -257,7 +245,7 @@ class Executor:
         except FileNotFoundError as e:
             run.status = "FAILED"
             run.error = f"找不到可执行目标: {e}"
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             run.status = "FAILED"
             run.error = str(e)
         finally:
@@ -268,20 +256,16 @@ class Executor:
                 self._user_stopped.discard(run.id)
             run.end = _now_local()
             if was_user_stopped:
-                # 用户主动停止：状态收尾（置 KILLED、落库、广播 finished）统一交给
-                # scheduler.stop 的 _finalize_user_stop 完成，这里只收尾日志流，
-                # 避免读线程抢先广播 RUNNING 的 finished。
                 self.runner.on_user_stopped(run)
             else:
                 self.runner.on_finished(run)
 
     def abort(self, run: Run) -> bool:
-        """中止一个运行中的实例。返回是否成功发出中止请求."""
         with self._lock:
             proc = self._procs.get(run.id)
         if proc is None:
             return False
-        self._user_stopped.add(run.id)  # 防止读线程用退出码把它覆盖成 FAILED
+        self._user_stopped.add(run.id)
         self._kill_proc(proc)
         run.status = "KILLED"
         run.error = "用户中止"
@@ -293,34 +277,21 @@ class Executor:
         self._kill_proc(proc)
 
     def _verify_exit_was_external(self, run: Run):
-        """读线程收尾时的身份/存活复核：确认进程确实已退出（仅在内部执行，不写任务日志）.
-
-        刚 proc.wait() 返回时进程通常已消失；此复核用于规避极端竞态：进程仍在跑、
-        或 PID 被新进程复用。复核结果不写入任务日志流，避免把内部系统噪声混进
-        用户看到的任务输出（保留给用户干净的真实输出）。
-        """
         try:
             if not run.pid:
                 return
             identity_mod.process_is_alive(run, run.pid)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     @staticmethod
     def kill_by_pid(pid) -> bool:
-        """按 PID 精准杀死进程（Windows 用 taskkill /F /PID，Unix 用 kill -9）.
-
-        用于终止 detach 方式拉起的独立后台进程（如 dsh web），
-        只终止该 PID，不影响其它进程。返回是否发出了终止指令。
-        """
         if not pid:
             return False
         try:
             pid = int(pid)
         except (TypeError, ValueError):
             return False
-        # 目标进程已不存在（可能已被前一次中止/停止清掉）：目标就是"让它停"，
-        # 已达成即视为成功，避免前端误报"停止失败"。
         if not Executor._pid_exists(pid):
             return True
         try:
@@ -330,7 +301,6 @@ class Executor:
                     capture_output=True,
                     timeout=10,
                 )
-                # taskkill 返回非 0（例如进程刚好退出），只要进程已不存在仍算成功。
                 return not Executor._pid_exists(pid)
             else:
                 os.kill(pid, 9)
@@ -340,7 +310,6 @@ class Executor:
 
     @staticmethod
     def _pid_exists(pid) -> bool:
-        """判断 PID 对应的进程是否还存在（Windows 用 tasklist，Unix 用 signal 0）."""
         try:
             pid = int(pid)
         except (TypeError, ValueError):
@@ -355,15 +324,14 @@ class Executor:
                     errors="replace",
                     timeout=10,
                 )
-                # tasklist 输出含中文表头，按 PID 纯数字匹配不受编码影响
                 return str(pid) in out.stdout
             else:
                 os.kill(pid, 0)
                 return True
         except ProcessLookupError:
             return False
-        except Exception:  # noqa: BLE001
-            return True  # 无法确认时保守认为仍存在，交由后续终止逻辑处理
+        except Exception:
+            return True
 
     @staticmethod
     def _kill_proc(proc: subprocess.Popen):

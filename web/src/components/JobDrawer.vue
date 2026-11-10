@@ -72,7 +72,6 @@ watch(() => props.id, (v) => { if (v) loadHistory() })
           </div>
         </section>
 
-        <!-- 2 执行内容（类型驱动 params） -->
         <section>
           <h4 class="fn-sec">执行内容</h4>
           <div class="kv">

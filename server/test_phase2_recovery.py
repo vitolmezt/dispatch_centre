@@ -1,48 +1,22 @@
 # -*- coding: utf-8 -*-
-"""Phase 2 · 状态一致性 & 异常恢复 —— 核心模块单测（Module 1-4）.
 
-(完整 10 项验收在 Module 5/6/7 之后补齐到本文件的 ''acceptance'' 段)
-
-运行：
-    C:\\Users\\bzds\\miniforge3\\python.exe test_phase2_recovery.py
-
-覆盖：
-  M1 身份字段 / STARTING 预登记：
-     - Run 新增字段 to_dict/from_dict 往返（含旧库缺省回填）
-     - running_runs() 分组（含 UNKNOWN、排除 INTERRUPTED）
-     - running_process_count() 只计 STARTING/RUNNING/ORPHANED，排除 UNKNOWN
-     - _trigger_job 先写 STARTING 意图、on_started 推进 RUNNING
-  M2 启动恢复：
-     - recover_on_start：无身份凭据的残留 STARTING -> UNKNOWN（绝不盲杀）
-     - Phase-1 遗留无凭据 RUNNING -> UNKNOWN
-     - 有身份且仍存活的 ORPHANED -> 保持/接管；STARTING(有身份存活) -> RUNNING
-     - 进程已确认死亡的 RUNNING/ORPHANED -> INTERRUPTED 归历史
-  M3 心跳/核查：
-     - _within_timeout 边界判定
-     - 连续超时 + OS 探针确认死亡 -> INTERRUPTED
-     - 超时但 OS 探针仍存活（身份匹配）-> 仅刷新心跳，不判死
-  M4 安全停止：
-     - safe_kill：PID/身份不匹配时拒绝（绝不盲杀）
-     - 无 PID/无凭据时拒绝
-"""
 import os
 import sys
 import tempfile
 import time
 from datetime import datetime
 
-# 在导入 app 之前配置临时库，避免污染真实 data/
 _TMP = tempfile.mkdtemp(prefix="sc_ph2_")
 os.environ.setdefault("SC_NODE_ID", "unit-node")
 os.environ["SC_HEARTBEAT_INTERVAL_SEC"] = "2"
 os.environ["SC_HEARTBEAT_TIMEOUT_TIMES"] = "2"
-os.environ["SC_HEARTBEAT_BATCH_SEC"] = "60"  # 测试里手动落库为准，合并写不干扰断言
+os.environ["SC_HEARTBEAT_BATCH_SEC"] = "60"
 
-from app import identity as identity_mod  # noqa: E402
-from app.constants import STATUS, RUN_STATES, ALL_GROUPS  # noqa: E402
-from app.models import Run, Job  # noqa: E402
-from app.store import Store  # noqa: E402
-from app.scheduler import Scheduler  # noqa: E402
+from app import identity as identity_mod
+from app.constants import STATUS, RUN_STATES, ALL_GROUPS
+from app.models import Run, Job
+from app.store import Store
+from app.scheduler import Scheduler
 
 
 def _job(name="t1"):
@@ -65,10 +39,6 @@ def _patch_alive(v):
     identity_mod.process_is_alive = lambda run, pid=None: v
     return orig
 
-
-# ============================================================
-# M1 · 身份字段 / STARTING 预登记
-# ============================================================
 def t01_roundtrip_new_fields():
     run = _mk_run(status="STARTING", detached=True, pid=1234,
                   process_create_time="FILETIME-x", executable_path="C:/a.exe",
@@ -88,9 +58,8 @@ def t01_roundtrip_new_fields():
 
 
 def t02_old_row_defaults():
-    # 模拟 Phase-1 旧数据：没有新字段的 dict
     old = {"id": "old1", "job_name": "t", "job_type": "COMMAND", "status": "RUNNING",
-           "pid": "42", "timeout_s": "5"}  # 旧的字符串 pid/timeout 也要被归一化
+           "pid": "42", "timeout_s": "5"}
     r = Run.from_dict(old)
     assert r.process_create_time is None
     assert r.node_id == "" and r.detached is False and r.adopted is False
@@ -116,7 +85,7 @@ def t04_running_runs_grouping():
     st.save_run(_mk_run("i1", "INTERRUPTED"))
     got = {r.id for r in st.running_runs()}
     assert got == {"o1", "r1", "s1", "u1"}, got
-    assert st.running_process_count() == 3  # UNKNOWN 不计
+    assert st.running_process_count() == 3
     print("[OK] M1 running_runs 分组 + 进程数计 UNKNOWN 除外")
 
 
@@ -125,9 +94,7 @@ def t05_trigger_starting_pre_registration():
     s = Scheduler(config_path="config/jobs.json", db_path=db)
     job = _job()
     s.jobs[job.name] = job
-    # 不真正起动后台 aps/heartbeat；直接走触发注册路径
     s.running.clear()
-    # 直接调 on_started，模拟 executor spawn 后登记：先改 STARTING 再推进
     run = _mk_run(status="STARTING")
     s.on_started(run)
     assert run.status == "RUNNING"
@@ -137,10 +104,6 @@ def t05_trigger_starting_pre_registration():
     assert from_store.status == "RUNNING"
     print("[OK] M1 STARTING 预登记 -> on_started 推进 RUNNING")
 
-
-# ============================================================
-# M2 · 启动恢复
-# ============================================================
 def _new_sched():
     db = os.path.join(_TMP, "m2_" + str(time.time_ns()) + ".db")
     return Scheduler(config_path="config/jobs.json", db_path=db)
@@ -148,7 +111,7 @@ def _new_sched():
 
 def t10_residual_starting_no_identity_unknown():
     s = _new_sched()
-    run = _mk_run("st", "STARTING")  # 无 process_create_time
+    run = _mk_run("st", "STARTING")
     s.store.save_run(run)
     orig = _patch_alive(False)
     try:
@@ -156,7 +119,6 @@ def t10_residual_starting_no_identity_unknown():
     finally:
         identity_mod.process_is_alive = orig
     after = s.store.get_run("st")
-    # 绝不盲杀、绝不算存活，转 UNKNOWN 待核查
     assert after.status == "UNKNOWN", after.status
     assert after.interrupted_reason
     print("[OK] M2 残留 STARTING(无身份) -> UNKNOWN")
@@ -164,7 +126,7 @@ def t10_residual_starting_no_identity_unknown():
 
 def t11_phase1_leftover_running_unknown():
     s = _new_sched()
-    run = _mk_run("legacy", "RUNNING")  # Phase-1 遗留，无身份凭据
+    run = _mk_run("legacy", "RUNNING")
     s.store.save_run(run)
     orig = _patch_alive(False)
     try:
@@ -179,7 +141,7 @@ def t12_dead_proc_interrupted():
     s = _new_sched()
     run = _mk_run("dead1", "RUNNING", process_create_time="ct-1", pid=777, detached=True)
     s.store.save_run(run)
-    orig = _patch_alive(False)  # 探针确认已死
+    orig = _patch_alive(False)
     try:
         s.recover_on_start()
     finally:
@@ -195,7 +157,7 @@ def t13_alive_orphan_resume():
     s = _new_sched()
     run = _mk_run("orph", "ORPHANED", process_create_time="ct-2", pid=888, detached=True)
     s.store.save_run(run)
-    orig = _patch_alive(True)  # 身份匹配 & 存活
+    orig = _patch_alive(True)
     try:
         s.recover_on_start()
     finally:
@@ -218,10 +180,6 @@ def t14_identity_alive_starting_running():
     assert s.store.get_run("s2").status == "RUNNING"
     print("[OK] M2 有身份且存活的 STARTING -> RUNNING")
 
-
-# ============================================================
-# M3 · 心跳 / 核查
-# ============================================================
 def t20_within_timeout():
     S = Scheduler
     old = (datetime.now().astimezone().timestamp() - 1)
@@ -236,11 +194,10 @@ def t20_within_timeout():
 def t21_heartbeat_timeout_dead_interrupted():
     s = _new_sched()
     run = _mk_run("h1", "RUNNING", process_create_time="ct-h", pid=111)
-    # 制造"最后心跳"极旧，触发超时
     run.last_heartbeat = datetime.fromtimestamp(
         datetime.now().timestamp() - 9999).astimezone().isoformat(timespec="seconds")
     s.store.save_run(run)
-    orig = _patch_alive(False)  # 探针确认死亡
+    orig = _patch_alive(False)
     try:
         s._check_heartbeat_timeout(run)
     finally:
@@ -257,23 +214,17 @@ def t22_heartbeat_timeout_alive_no_kill():
     run.last_heartbeat = datetime.fromtimestamp(
         datetime.now().timestamp() - 9999).astimezone().isoformat(timespec="seconds")
     s.store.save_run(run)
-    orig = _patch_alive(True)  # 探针仍确认存活
+    orig = _patch_alive(True)
     try:
         s._check_heartbeat_timeout(run)
     finally:
         identity_mod.process_is_alive = orig
     after = s.store.get_run("h2")
-    # 只弹心跳，不判死、不改状态
     assert after.status == "RUNNING", after.status
     print("[OK] M3 心跳超时但探针存活 -> 不判死")
 
-
-# ============================================================
-# M4 · 安全停止
-# ============================================================
 def t30_safe_kill_identity_mismatch_refusal():
     run = _mk_run("sk1", "RUNNING", pid=999999, process_create_time="nope-ct")
-    # 任何 pid 上都不可能匹配到 "nope-ct"，必须拒绝，绝不盲杀
     old = identity_mod.get_process_create_time
     identity_mod.get_process_create_time = lambda pid: "different-ct"
     try:
@@ -299,9 +250,6 @@ def t32_safe_kill_no_pid():
     print("[OK] M4 无 PID -> 拒绝")
 
 
-# ============================================================
-# M5 · detach 四问接管（修订版3 §6.1）
-# ============================================================
 def t40_adopt_orphan_all_questions_pass():
     s = _new_sched()
     logp = os.path.join(_TMP, "t40.log")
@@ -310,8 +258,6 @@ def t40_adopt_orphan_all_questions_pass():
     run = _mk_run("adp", "ORPHANED", pid=555, process_create_time="adopt-ct",
                   detached=True, log_path=logp)
     s.store.save_run(run)
-    # 身份核验要"匹配"：monkeypatch 该 run 的自有 pid 创建时刻为已存值
-    # 方案：让 get_process_create_time 对 pid 返回 已存 token，verify_identity 成立
     orig_ct = identity_mod.get_process_create_time
     identity_mod.get_process_create_time = lambda pid: "adopt-ct"
     orig_alive = identity_mod.process_is_alive
@@ -329,9 +275,8 @@ def t40_adopt_orphan_all_questions_pass():
 
 def t41_adopt_orphan_no_log_anchor():
     s = _new_sched()
-    # 无 log_path -> 问题3(日志锚点)不过 -> 保持 ORPHANED
     run = _mk_run("adp2", "ORPHANED", pid=556, process_create_time="adopt-ct2",
-                  detached=True)  # log_path 缺省 None
+                  detached=True)
     s.store.save_run(run)
     orig_ct = identity_mod.get_process_create_time
     identity_mod.get_process_create_time = lambda pid: "adopt-ct2"
@@ -357,7 +302,6 @@ def t42_adopt_orphan_identity_mismatch():
     run = _mk_run("adp3", "ORPHANED", pid=557, process_create_time="expected-ct",
                   detached=True, log_path=logp)
     s.store.save_run(run)
-    # 身份不匹配（PID 复用）：拒绝接管，保持 ORPHANED
     orig_ct = identity_mod.get_process_create_time
     identity_mod.get_process_create_time = lambda pid: "OTHER-ct"
     orig_alive = identity_mod.process_is_alive
@@ -372,20 +316,13 @@ def t42_adopt_orphan_identity_mismatch():
     assert after.adopted is False
     print("[OK] M5 身份不匹配(PID 复用) -> 拒绝接管，保持 ORPHANED")
 
-
-# ============================================================
-# M7 · SAFE-FIRST（§8.2）：绝不幂等自动重试，异常保持终态
-# ============================================================
 def t50_safe_first_no_auto_restart():
     s = _new_sched()
-    # 已 INTERRUPTED 的历史记录卷入 running_runs? 不会（running_runs 排除 INTERRUPTED）。
-    # 这里验证：恢复扫描只收敛不重启，且 retryable 本轮不生效(默认 False)。
     run = _mk_run("sf1", "INTERRUPTED", process_create_time="ct-sf", pid=1,
                   interrupted_reason="旧中断")
     s.store.save_run(run)
-    orig = _patch_alive(True)  # 即便探针谎报存活，INTERRUPTED 也绝不复活为 RUNNING
+    orig = _patch_alive(True)
     try:
-        # INTERRUPTED 本就不在 running_runs 候选；recover 只针对 running 态
         s.recover_on_start()
     finally:
         identity_mod.process_is_alive = orig
@@ -397,7 +334,6 @@ def t50_safe_first_no_auto_restart():
 
 def t51_safe_first_unknown_not_counted():
     s = _new_sched()
-    # UNKNOWN 只是"待核查"，绝不能凭心跳/记录断言它"在跑"
     s.store.save_run(_mk_run("unk1", "UNKNOWN"))
     assert s.store.running_process_count() == 0
     print("[OK] M7 SAFE-FIRST：UNKNOWN 不计入实际运行进程数")
@@ -409,30 +345,26 @@ def t60_running_view_grouping():
     s.store.save_run(_mk_run("g_r", "RUNNING"))
     s.store.save_run(_mk_run("g_s", "STARTING"))
     s.store.save_run(_mk_run("g_u", "UNKNOWN"))
-    s.store.save_run(_mk_run("g_i", "INTERRUPTED"))  # 应归历史，不进运行表
+    s.store.save_run(_mk_run("g_i", "INTERRUPTED"))
     v = s.running_view(limit=100)
-    assert v["alive_total"] == 3, v["alive_total"]  # RUNNING+ORPHANED+STARTING，UNKNOWN 不计
+    assert v["alive_total"] == 3, v["alive_total"]
     counts = v["counts"]
     assert counts.get("RUNNING") == 1 and counts.get("ORPHANED") == 1
     assert counts.get("UNKNOWN") == 1 and counts.get("STARTING") == 1
     assert counts.get("INTERRUPTED", 0) == 0
     ids = {d["id"] for d in v["items"]}
     assert "g_i" not in ids and "g_o" in ids and "g_u" in ids
-    # 返回给前端的 items 必须含 Phase2 身份字段
     sample = next(d for d in v["items"] if d["id"] == "g_r")
     assert "node_id" in sample and "adopted" in sample
     print("[OK] running_view 分组 + alive_total 口径 + Phase2 字段透出")
 
 
 def t70_status_change_broadcast_fires():
-    # 状态迁移(UNKNOWN/ORPHANED/INTERRUPTED)应触发 SSE status_changed 广播，
-    # 前端收到后 bump 刷新看板。用 broker 探针：记录 broadcast 的 payload。
     s = _new_sched()
     events = []
     orig_broadcast = Scheduler.broadcast
     Scheduler.broadcast = lambda self, data: events.append(data)
     try:
-        # 心跳超时 + 探针死 -> INTERRUPTED，应广播 status_changed
         run = _mk_run("ss1", "RUNNING", process_create_time="ct-ss", pid=333)
         run.last_heartbeat = datetime.fromtimestamp(
             datetime.now().timestamp() - 9999).astimezone().isoformat(timespec="seconds")
@@ -457,7 +389,7 @@ def t71_starting_no_cred_broadcast():
     orig_broadcast = Scheduler.broadcast
     Scheduler.broadcast = lambda self, data: events.append(data)
     try:
-        run = _mk_run("ss2", "STARTING")  # 无身份 -> UNKNOWN，应广播
+        run = _mk_run("ss2", "STARTING")
         s.store.save_run(run)
         orig = _patch_alive(False)
         try:
@@ -500,7 +432,7 @@ def _main():
 if __name__ == "__main__":
     try:
         sys.exit(_main())
-    except Exception:  # noqa: BLE001
+    except Exception:
         import traceback
         traceback.print_exc()
         sys.exit(1)

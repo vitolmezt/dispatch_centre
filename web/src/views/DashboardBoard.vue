@@ -4,21 +4,10 @@ import * as echarts from 'echarts'
 import { fetchHistory } from '../api'
 import { refreshTick } from '../store/refresh'
 
-/**
- * 数据看板：迁移自 task-dashboard-demo-fixed 的视觉设计（布局/配色/卡片/间距/响应式），
- * 数据用本系统真实执行历史驱动（fetchHistory({all:true}) + 前端聚合）。
- *  - KPI 卡片：总执行 / 成功率 / 进行中 / 失败+超时 / 平均耗时（含周期环比）
- *  - 执行趋势：按日期的成功/失败折线（支持 24h / 7天 / 30天 切换）
- *  - 执行状态：环形占比图 + 图例行（中心显示执行总数）
- *  - 任务执行排行：TOP 横向柱状图
- *  - 任务健康度：各任务成功率横向条形图
- * 数据由 SSE 事件（refreshTick）驱动刷新，图表生命周期在组件内管理。
- */
 
 const loading = ref(false)
 const unloadMsg = ref('')
 
-// ---------- 真实数据聚合 ----------
 const stats = ref({
   total: 0, running: 0, timedout: 0, killed: 0, success: 0, failed: 0, avgMs: 0,
   statusMap: {}, jobCount: {}, jobStatus: {}, dayOk: {}, dayAll: {},
@@ -26,9 +15,9 @@ const stats = ref({
 
 function aggregate(runs) {
   const s = { total: 0, running: 0, timedout: 0, killed: 0, success: 0, failed: 0, avgMs: 0, sumMs: 0, nDur: 0 }
-  const statusMap = {}      // status -> count
-  const jobCount = {}       // job_name -> 次数
-  const jobStatus = {}      // job_name -> { ok, fail }
+  const statusMap = {}
+  const jobCount = {}
+  const jobStatus = {}
   const dayOk = {}, dayAll = {}
 
   for (const r of runs) {
@@ -62,9 +51,6 @@ function aggregate(runs) {
   return s
 }
 
-// ---------- KPI 卡片（含环比） ----------
-// 环比：把全量按时间对半分成「上一段 / 下一段」，比较两段指标变化。
-// getter 接收子数组，返回该段聚合值。
 function periodDelta(getter) {
   const runs = stats.value.runsFull || []
   if (runs.length < 4) return null
@@ -77,7 +63,7 @@ function periodDelta(getter) {
   const d = ((a - b) / b) * 100
   return isFinite(d) ? (d >= 0 ? '+' : '') + d.toFixed(1) + '%' : null
 }
-// 用「后半段相对前半段」计算成功率变化的百分比点差
+
 function periodRateDelta() {
   const runs = stats.value.runsFull || []
   if (runs.length < 4) return null
@@ -101,7 +87,7 @@ const kpis = computed(() => {
   ]
 })
 
-// ---------- 状态项（环图 + 图例行） ----------
+
 const STATUS_META = {
   SUCCEEDED: { name: '已完成', color: '#43C99A' },
   KILLED: { name: '已中止', color: '#D69A4B' },
@@ -120,7 +106,6 @@ const statusItems = computed(() => {
     .filter(i => i.count > 0)
 })
 
-// 排行 & 健康度（Top 5）
 const topJobs = computed(() =>
   Object.entries(stats.value.jobCount || {})
     .sort((a, b) => b[1] - a[1])
@@ -138,7 +123,6 @@ const healthJobs = computed(() =>
     .slice(0, 5)
 )
 
-// ---------- 时间段切换 ----------
 const ranges = [
   { label: '近 24 小时', days: 1 },
   { label: '近 7 天', days: 7 },
@@ -159,7 +143,6 @@ function trendSeries() {
   }
 }
 
-// ---------- ECharts ----------
 const trendEl = ref(null)
 const statusEl = ref(null)
 const rankEl = ref(null)
@@ -173,7 +156,6 @@ function makeCharts() {
   charts.forEach(c => c?.dispose())
   charts = [trendEl.value, statusEl.value, rankEl.value, healthEl.value].map(el => el ? echarts.init(el) : null)
 
-  // 执行趋势
   const trend = trendSeries()
   charts[0]?.setOption({
     animationDuration: 700,
@@ -188,7 +170,6 @@ function makeCharts() {
     ],
   })
 
-  // 执行状态环形图
   const items = statusItems.value
   charts[1]?.setOption({
     animationDuration: 700,
@@ -197,7 +178,6 @@ function makeCharts() {
     series: [{ type: 'pie', radius: ['65%', '82%'], center: ['50%', '50%'], avoidLabelOverlap: true, label: { show: false }, itemStyle: { borderColor: '#1B2029', borderWidth: 4, borderRadius: 5 }, data: items.map(i => ({ name: i.name, value: i.count, itemStyle: { color: i.color } })) }],
   })
 
-  // 任务执行排行
   charts[2]?.setOption({
     animationDuration: 700,
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: '#202631', borderColor: '#343D4C', textStyle: { color: '#E8EDF5' } },
@@ -207,7 +187,6 @@ function makeCharts() {
     series: [{ type: 'bar', data: topJobs.value.map(j => j.runs), barWidth: 9, showBackground: true, backgroundStyle: { color: '#2A313D', borderRadius: 6 }, itemStyle: { color: '#6C9CFF', borderRadius: [0, 5, 5, 0] }, label: { show: true, position: 'right', color: '#C7D0DE', fontSize: 11 } }],
   })
 
-  // 任务健康度
   charts[3]?.setOption({
     animationDuration: 700,
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: '#202631', borderColor: '#343D4C', textStyle: { color: '#E8EDF5' }, formatter: params => `${params[0].name}<br/>成功率：${params[0].value}%` },
@@ -225,7 +204,6 @@ async function load() {
     const res = await fetchHistory({ all: true })
     const runs = res.items || []
     const s = aggregate(runs)
-    // 供环比计算保留原始时间序
     s.runsFull = runs
     stats.value = s
     await nextTick()
@@ -252,10 +230,8 @@ onBeforeUnmount(() => {
 <template>
   <div v-loading="loading" class="dash">
 
-    <!-- 页头 -->
     <section class="page-heading"><div class="eyebrow">OVERVIEW / MONITORING</div></section>
 
-    <!-- KPI 卡片 -->
     <section class="kpi-grid">
       <article v-for="kpi in kpis" :key="kpi.label" class="kpi-card">
         <div class="kpi-top"><span>{{ kpi.label }}</span><span class="kpi-icon" :class="kpi.tone">{{ kpi.icon }}</span></div>
@@ -268,7 +244,6 @@ onBeforeUnmount(() => {
       </article>
     </section>
 
-    <!-- 主网格：执行趋势 + 执行状态 -->
     <section class="primary-grid">
       <article class="panel trend-panel">
         <div class="panel-heading">
@@ -301,7 +276,6 @@ onBeforeUnmount(() => {
       </article>
     </section>
 
-    <!-- 次网格：排行 + 健康度 -->
     <section class="secondary-grid">
       <article class="panel">
         <div class="panel-heading"><div><h2>任务执行排行</h2><p>按执行次数排序 · Top 5</p></div></div>
