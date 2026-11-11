@@ -203,8 +203,9 @@ function themeOnlyOption(i) {
         xAxis: { axisLabel: { color: th.axisLabelColor, fontSize: 11 }, axisLine: { lineStyle: { color: th.gridLineColor } } },
         yAxis: { axisLabel: { color: th.axisLabelColor, fontSize: 11 }, splitLine: { lineStyle: { color: th.gridLineColor, type: 'dashed' } } },
         series: [{
+          itemStyle: { color: chartStateColor('ok') },
           lineStyle: { width: 2.5, color: chartStateColor('ok') },
-          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: isDark ? 'rgba(85,205,162,.20)' : 'rgba(22,163,74,.14)' }, { offset: 1, color: 'rgba(85,205,162,0)' }]) },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: isDark ? 'rgba(67,201,154,.20)' : 'rgba(22,163,74,.14)' }, { offset: 1, color: 'rgba(67,201,154,0)' }]) },
         }],
       }
     case 1: // 状态分布
@@ -248,8 +249,8 @@ function makeCharts() {
     xAxis: { type: 'category', boundaryGap: false, data: trend.labels, axisLabel: { color: th.axisLabelColor, fontSize: 11 }, axisLine: { lineStyle: { color: th.gridLineColor } }, axisTick: { show: false } },
     yAxis: { type: 'value', axisLabel: { color: th.axisLabelColor, fontSize: 11 }, splitLine: { lineStyle: { color: th.gridLineColor, type: 'dashed' } }, axisLine: { show: false } },
     series: [
-      { name: '成功', type: 'line', smooth: .38, symbol: 'none', data: trend.success, lineStyle: { width: 2.5, color: chartStateColor('ok') }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: isDark ? 'rgba(85,205,162,.20)' : 'rgba(22,163,74,.14)' }, { offset: 1, color: 'rgba(85,205,162,0)' }]) } },
-      { name: '失败', type: 'line', smooth: .38, symbol: 'none', data: trend.failed, lineStyle: { width: 2, color: chartStateColor('fail') } },
+      { name: '成功', type: 'line', smooth: .38, symbol: 'none', data: trend.success, itemStyle: { color: chartStateColor('ok') }, lineStyle: { width: 2.5, color: chartStateColor('ok') }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: isDark ? 'rgba(67,201,154,.20)' : 'rgba(22,163,74,.14)' }, { offset: 1, color: 'rgba(67,201,154,0)' }]) } },
+      { name: '失败', type: 'line', smooth: .38, symbol: 'none', data: trend.failed, itemStyle: { color: chartStateColor('fail') }, lineStyle: { width: 2, color: chartStateColor('fail') } },
     ],
   })
 

@@ -57,7 +57,9 @@
   --focus-ring: rgba(79, 140, 255, .45);   /* 焦点光圈 */
   --shadow-color: rgba(0, 0, 0, .45);      /* 阴影 */
   --mask-color: rgba(0, 0, 0, .5);         /* 遮罩 */
-  --tooltip-bg: #20242d;
+  --tooltip-bg: #20242d;                   /* 图表提示框背景 */
+  --tooltip-text: #ffffff;                 /* 图表提示框文字 */
+  --tooltip-border: #3a4555;               /* 图表提示框边框 */
 
   --scrollbar-thumb: #333c4b;
   --scrollbar-hover: #465263;
@@ -142,7 +144,9 @@
   --focus-ring: rgba(37, 99, 235, .35);
   --shadow-color: rgba(15, 23, 42, .08);
   --mask-color: rgba(15, 23, 42, .45);
-  --tooltip-bg: #0f172a;
+  --tooltip-bg: #ffffff;                   /* 图表提示框背景 */
+  --tooltip-text: #0f172a;                 /* 图表提示框文字 */
+  --tooltip-border: #cbd5e1;               /* 图表提示框边框 */
 
   --scrollbar-thumb: #cbd5e1;
   --scrollbar-hover: #94a3b8;

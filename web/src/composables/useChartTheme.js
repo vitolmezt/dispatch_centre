@@ -18,9 +18,9 @@ export function getChartThemeOptions() {
   return {
 
     tooltip: {
-      backgroundColor: cssVar('--tooltip-bg', isDark ? '#20242d' : '#0f172a'),
-      borderColor: cssVar('--border-strong', isDark ? '#3a4555' : '#cbd5e1'),
-      textStyle: { color: cssVar('--text-inverse', '#ffffff') },
+      backgroundColor: cssVar('--tooltip-bg', isDark ? '#20242d' : '#ffffff'),
+      borderColor: cssVar('--tooltip-border', isDark ? '#3a4555' : '#cbd5e1'),
+      textStyle: { color: cssVar('--tooltip-text', isDark ? '#ffffff' : '#0f172a') },
     },
     axisLabelColor: cssVar('--text-muted', isDark ? '#9AA5B5' : '#64748b'),
     gridLineColor: isDark ? 'rgba(148, 163, 184, .12)' : 'rgba(100, 116, 139, .16)',
@@ -33,8 +33,9 @@ export function getChartThemeOptions() {
   }
 }
 
-const STATE_COLORS = { ok: '#55CDA2', fail: '#F0747A' }
+// 与看板 KPI 图标、图例圆点、状态分布饼图保持同一组成功/失败色
+const STATE_COLORS = { ok: '#43c99a', fail: '#ef6a70' }
 
-export const chartStateColor = (k) => STATE_COLORS[k] || '#55CDA2'
+export const chartStateColor = (k) => STATE_COLORS[k] || STATE_COLORS.ok
 
 export { cssVar }
