@@ -125,7 +125,6 @@ const healthJobs = computed(() =>
     .sort((a, b) => b.rate - a.rate)
 )
 
-// 排行图内部高度：每行任务占约 30px，加上下留白（供外层容器滚动）
 function chartHeight(count) {
   return Math.max(40, count * 30 + 24) + 'px'
 }
@@ -138,13 +137,11 @@ const ranges = [
 const activeRange = ref('近 7 天')
 
 function trendSeries() {
-  // 今天：从今天第一条有任务的时刻起按小时分桶（前面空时段不显示）
   if (activeRange.value === '今天') {
     const runs = stats.value.runsFull || []
     const now = new Date()
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).getTime()
     const nowTs = now.getTime()
-    // 只保留今天的记录并统计各小时计数，记录最小时刻（用于横轴起点）
     const hourCount = {}
     const hourOk = {}
     let firstHour = -1
@@ -157,7 +154,6 @@ function trendSeries() {
       if ((r.status || 'UNKNOWN').toUpperCase() === 'SUCCEEDED') hourOk[h] = (hourOk[h] || 0) + 1
       if (firstHour === -1 || h < firstHour) firstHour = h
     }
-    // 从第一条任务所在小时开始，到当前系统小时为止
     if (firstHour === -1) firstHour = 0
     const lastHour = now.getHours()
     const labels = []
@@ -172,7 +168,6 @@ function trendSeries() {
     return { labels, success, failed }
   }
 
-  // 近 7 / 30 天：按自然日分桶（最后一个有记录的日期切片）
   const ok = stats.value.dayOk || {}
   const all = stats.value.dayAll || {}
   const days = ranges.find(r => r.label === activeRange.value)?.days || 7
@@ -191,9 +186,55 @@ const rankEl = ref(null)
 const healthEl = ref(null)
 let charts = []
 
+function initCharts() {
+  ;[trendEl, statusEl, rankEl, healthEl].forEach((elRef, i) => {
+    if (!charts[i] && elRef.value) charts[i] = echarts.init(elRef.value)
+  })
+}
+
+function themeOnlyOption(i) {
+  const th = getChartThemeOptions()
+  const isDark = getThemeVar() === 'dark'
+  switch (i) {
+    case 0: // 执行趋势
+      return {
+        tooltip: th.tooltip,
+        legend: { textStyle: { color: th.axisLabelColor, fontSize: 11 } },
+        xAxis: { axisLabel: { color: th.axisLabelColor, fontSize: 11 }, axisLine: { lineStyle: { color: th.gridLineColor } } },
+        yAxis: { axisLabel: { color: th.axisLabelColor, fontSize: 11 }, splitLine: { lineStyle: { color: th.gridLineColor, type: 'dashed' } } },
+        series: [{
+          lineStyle: { width: 2.5, color: chartStateColor('ok') },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: isDark ? 'rgba(85,205,162,.20)' : 'rgba(22,163,74,.14)' }, { offset: 1, color: 'rgba(85,205,162,0)' }]) },
+        }],
+      }
+    case 1: // 状态分布
+      return {
+        tooltip: th.tooltip,
+        title: { textStyle: { color: th.titleColor, fontSize: 25, fontWeight: 650 }, subtextStyle: { color: th.subTitleColor, fontSize: 11, lineHeight: 24 } },
+        series: [{ itemStyle: { borderColor: th.pieBorderColor, borderWidth: 4, borderRadius: 5 } }],
+      }
+    case 2: // 执行排行
+    case 3: // 任务健康度
+      return {
+        tooltip: th.tooltip,
+        yAxis: { axisLabel: { color: th.axisLabelColorStrong, fontSize: 11 } },
+        series: [{ showBackground: true, backgroundStyle: { color: th.barBgColor, borderRadius: 6 }, label: { color: th.seriesLabelColor, fontSize: 11 } }],
+      }
+    default:
+      return {}
+  }
+}
+
+/** 纯主题更新：只局部合并颜色，不重算数据、不重播系列动画。 */
+function updateChartTheme() {
+  charts.forEach((chart, i) => {
+    if (!chart) return
+    chart.setOption(themeOnlyOption(i), { notMerge: false, lazyUpdate: false, silent: true })
+  })
+}
+
 function makeCharts() {
-  charts.forEach(c => c?.dispose())
-  charts = [trendEl.value, statusEl.value, rankEl.value, healthEl.value].map(el => el ? echarts.init(el) : null)
+  initCharts()
 
   const th = getChartThemeOptions()
   const isDark = getThemeVar() === 'dark'
@@ -250,13 +291,20 @@ async function load() {
     stats.value = s
     await nextTick()
     makeCharts()
+    // 小图表高度随行数变化，等一帧后按容器实际尺寸校正画布
+    requestAnimationFrame(() => resizeCharts())
   } catch (e) {
     unloadMsg.value = e?.message || String(e)
   }
 }
 
 watch(activeRange, async () => { await nextTick(); makeCharts() })
-watch(themeVar, async () => { await nextTick(); makeCharts() })
+watch(themeVar, () => {
+  requestAnimationFrame(() => {
+    updateChartTheme()
+    resizeCharts()
+  })
+}, { flush: 'post' })
 watch(refreshTick, () => load())
 
 onMounted(() => {
@@ -338,8 +386,8 @@ onBeforeUnmount(() => {
 .dash { font-family: Inter, "Noto Sans SC", -apple-system, "Segoe UI", sans-serif; color: var(--text); display: flex; flex-direction: column; }
 
 .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
-.kpi-card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 16px 17px 12px; min-width: 0; transition: background .18s, border-color .18s; }
-.kpi-card:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.kpi-card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 16px 17px 12px; min-width: 0; }
+.kpi-card:hover { background: var(--bg-hover); border-color: var(--border-strong); transition: background .18s, border-color .18s; }
 .kpi-top { display: flex; justify-content: space-between; align-items: center; color: var(--text-secondary); font-size: 11px; }
 .kpi-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 7px; font-size: 12px; font-weight: 700; }
 .kpi-icon.blue { color: #8bb0ff; background: #6c9cff17; }
@@ -402,7 +450,6 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-/* 让看板内容的最后一块(排行/健康度)贴近底部页脚,与列表页底部间距保持一致 */
 .content:has(> .dash) { display: flex; flex-direction: column; }
 .content:has(> .dash) > .dash { flex: 1; }
 </style>
