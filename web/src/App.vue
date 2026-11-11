@@ -11,9 +11,8 @@ import { initTheme, useTheme, toggleTheme } from './composables/useTheme'
 import JobDrawer from './components/JobDrawer.vue'
 import RunDetailDrawer from './components/RunDetailDrawer.vue'
 
-const { theme } = useTheme()
+const { theme, isTransitioning } = useTheme()
 
-// 全局常量字典 + 菜单任务列表（供抽屉用）
 const jobs = ref([])
 provide('jobs', jobs)
 provide('reloadJobs', reloadJobs)
@@ -102,7 +101,7 @@ const menus = [
           <div class="page-title">{{ pageTitle[route.path] || '调度中心' }}</div>
           <div class="top-actions">
             <el-tooltip :content="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'" placement="bottom" :show-after="200">
-              <button class="theme-toggle" type="button" @click="toggleTheme()" :title="theme === 'dark' ? '浅色' : '深色'">
+              <button class="theme-toggle" type="button" :disabled="isTransitioning" @click="toggleTheme($event.currentTarget)" :title="theme === 'dark' ? '浅色' : '深色'">
                 <svg v-if="theme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="theme-icon">
                   <circle cx="12" cy="12" r="5" />
                   <line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
@@ -168,9 +167,8 @@ const menus = [
 .nav-item {
   display: flex; align-items: center; gap: 12px; padding: 11px 14px;
   border-radius: 8px; color: var(--text-secondary); font-size: 14px; text-decoration: none;
-  transition: background .15s, color .15s;
 }
-.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item:hover { background: var(--bg-hover); color: var(--text); transition: background .15s, color .15s; }
 .nav-item.router-link-active { background: var(--primary); color: #fff; font-weight: 600; }
 
 .topbar {
@@ -186,9 +184,9 @@ const menus = [
   width: 32px; height: 32px; border-radius: 8px;
   border: 1px solid var(--border); background: transparent; cursor: pointer;
   color: var(--text-secondary);
-  transition: background .15s, color .15s, border-color .15s;
 }
-.theme-toggle:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
+.theme-toggle:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); transition: background .15s, color .15s, border-color .15s; }
+.theme-toggle:disabled { cursor: default; opacity: .6; }
 .theme-icon { width: 17px; height: 17px; }
 
 .content {

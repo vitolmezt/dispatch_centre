@@ -262,6 +262,37 @@ code, .mono { font-family: var(--mono); font-size: .95em; white-space: nowrap; }
 
 /* ========== Tooltip / 遮罩 使用 El 变量即可，无需额外声明 ========== */
 
+/* ========== 主题切换视觉：圆形扩散光环（纯装饰） ==========
+   主题是【同步立即】整体切换的，页面任何时刻只有一种主题；
+   这里的光环只作为点击反馈，不承担主题覆盖功能，也不参与布局。
+
+   - position:fixed + translate(-50%,-50%)：以 JS 传入的按钮中心为圆心向四周扩散，
+     不会出现从左上角展开的情况。
+   - pointer-events:none：不拦截按钮点击、弹窗操作与页面滚动。
+   - 只画描边圆环（border + border-radius:50%），不使用实心色块/不透明黑白圆，
+     因此不会形成黑白主题分界，也不会遮挡内容。
+   - 圆环颜色取当前主题强调色 --primary-color，随主题自动适配。 */
+.theme-ripple {
+  position: fixed;
+  z-index: 999999;
+  pointer-events: none;
+  border: 2px solid var(--primary-color);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  will-change: width, height, opacity;
+}
+
+/* 主题切换瞬间不再需要任何全局 transition 抑制：
+   原先属于主题颜色过渡的 .nav-item / .theme-toggle / .kpi-card 已改为
+   「只在 :hover 态声明 transition」，换肤时颜色与整页同帧跳变，
+   hover 平滑交互完整保留。因此这里不再有 html.sc-theme-switching 通配/精准规则。 */
+
+@media (prefers-reduced-motion: reduce) {
+  /* 减少动态效果：不显示光环（JS 侧也不会创建） */
+  .theme-ripple { display: none; }
+}
+
 @media (max-width: 768px) {
   .el-drawer { max-width: 92vw; }
 }
