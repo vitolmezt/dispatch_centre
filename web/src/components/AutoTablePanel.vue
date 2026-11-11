@@ -1,5 +1,5 @@
 <script setup>
-import { defineProps, useAttrs, onMounted, onUnmounted } from 'vue'
+import { useAttrs, onMounted, onUnmounted } from 'vue'
 import { useTablePanel } from '../composables/useTablePanel'
 import PagerBar from './PagerBar.vue'
 

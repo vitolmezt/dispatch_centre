@@ -3,7 +3,7 @@ import { onMounted, ref, watch } from 'vue'
 import { fetchRunning, abortRun, fetchJobs } from '../api'
 import { statusLabel, jobTypeLabel, triggerLabel, dict } from '../constants'
 import { refreshTick, bump } from '../store/refresh'
-import { openRun } from '../store/drawer'
+import { openRun, openJob } from '../store/drawer'
 import { toast } from '../store/toast'
 import AutoTablePanel from '../components/AutoTablePanel.vue'
 
@@ -125,6 +125,12 @@ async function onAbort(run) {
 }
 function open(run) { openRun(run.id) }
 
+// 整行点击：定时任务行打开任务详情，执行实例行打开执行详情（与任务列表/执行历史一致）
+function onRowClick(row) {
+  if (row.kind === 'run' && row.id) openRun(row.id)
+  else if (row.job_name || row.name) openJob(row.job_name || row.name)
+}
+
 const STATUS_CLASS = {
   PENDING: 'PENDING',
   RUNNING: 'RUNNING',
@@ -159,6 +165,7 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
     <AutoTablePanel :data="pageRows" v-loading="loading" @sort-change="onSortChange"
                     :page="page" :total="total" :page-size="pageSize"
                     @change="onPage" @size-change="onSize"
+                    highlight-current-row clickable @row-click="onRowClick"
                     :empty-text="pageRows.length ? '' : '待开始的定时任务与执行中的实例都为空'">
         <el-table-column label="任务名称" min-width="180" align="center">
           <template #default="{ row }"><strong>{{ row.job_name || row.name }}</strong></template>
@@ -191,7 +198,7 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
         </el-table-column>
         <el-table-column label="操作" fixed="right" width="150" align="center">
           <template #default="{ row }">
-            <div v-if="row.kind === 'run'" class="ops">
+            <div v-if="row.kind === 'run'" class="ops" @click.stop>
               <el-button size="small" @click="open(row)">详情</el-button>
               <el-button size="small" type="danger" plain @click="onAbort(row)">中止</el-button>
             </div>
