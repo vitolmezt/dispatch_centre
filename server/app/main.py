@@ -140,14 +140,20 @@ def update_job(name: str, payload: dict = Body(...)):
     if old is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
     data = dict(payload)
-    data["name"] = name
+    # 允许改名：payload 里的 name 优先；未提供时沿用路径里的名字。
+    # 注意不能无条件覆盖成路径名，否则改名会被静默丢弃。
+    new_name = str(data.get("name") or "").strip() or name
+    data["name"] = new_name
+    if new_name != name and new_name in s.jobs:
+        raise HTTPException(status_code=409, detail=f"任务名已存在: {new_name}")
     job = Job.from_dict(data)
     errs = job.validate()
     if errs:
         raise _job_err("；".join(errs))
-    s.update_job(job)
-    audit.audit("job.update", obj=name, detail=f"type={job.type}")
-    return {"ok": True, "name": job.name}
+    s.update_job(job, old_name=name)
+    detail = f"type={job.type}" + (f" renamed_from={name}" if new_name != name else "")
+    audit.audit("job.update", obj=new_name, detail=detail)
+    return {"ok": True, "name": job.name, "renamed": new_name != name}
 
 
 @app.delete("/api/jobs/{name}", dependencies=[Depends(auth.auth_required)])

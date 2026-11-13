@@ -109,6 +109,36 @@ class Store:
             c.execute("DELETE FROM jobs WHERE name=?", (name,))
             self._conn.commit()
 
+    def rename_job(self, old_name: str, job: Job):
+        """把 old_name 这一行改名为 job.name，并写入新内容。
+
+        name 是主键，直接 upsert 新名会留下旧名那条记录，造成同一条任务出现两份，
+        所以改名必须是「先删旧、再写新」且在同一事务里完成。
+        """
+        with self._lock:
+            c = self._conn.cursor()
+            now = datetime.now(timezone.utc).isoformat()
+            row = c.execute("SELECT created_at FROM jobs WHERE name=?",
+                            (old_name,)).fetchone()
+            created = row["created_at"] if row and row["created_at"] else (
+                job.created_at or now)
+            job.created_at = created
+            job.updated_at = now
+            try:
+                c.execute("DELETE FROM jobs WHERE name=?", (old_name,))
+                c.execute(
+                    "INSERT INTO jobs (name, job_json, updated_at, created_at) "
+                    "VALUES (?,?,?,?) "
+                    "ON CONFLICT(name) DO UPDATE SET "
+                    "job_json=excluded.job_json, updated_at=excluded.updated_at, "
+                    "created_at=excluded.created_at",
+                    (job.name, json.dumps(job.to_dict()), now, created),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def get_job(self, name: str) -> Optional[Job]:
         with self._lock:
             row = self._conn.execute(

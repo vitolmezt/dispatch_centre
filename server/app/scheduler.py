@@ -538,14 +538,43 @@ class Scheduler:
             self.store.upsert_jobs([job])
         self._register_job(job)
 
-    def update_job(self, job: Job):
+    def update_job(self, job: Job, old_name: Optional[str] = None):
+        """更新任务。old_name 与 job.name 不同时表示改名。"""
+        renamed = bool(old_name) and old_name != job.name
         with self._lock:
-            existed = job.name in self.jobs
-            self.jobs[job.name] = job
-            self.store.upsert_jobs([job])
+            existed = job.name in self.jobs or (old_name in self.jobs if old_name else False)
+            if renamed:
+                self.jobs.pop(old_name, None)
+                self.jobs[job.name] = job
+                self.store.rename_job(old_name, job)
+                self._rename_in_service_groups(old_name, job.name)
+            else:
+                self.jobs[job.name] = job
+                self.store.upsert_jobs([job])
+        if renamed:
+            self._unregister_job(old_name)
         self._register_job(job)
         if not existed:
             logger.info(f"created job {job.name} via update (formerly absent)")
+        elif renamed:
+            logger.info(f"renamed job {old_name} -> {job.name}")
+
+    def _rename_in_service_groups(self, old_name: str, new_name: str):
+        """任务改名后，同步更新服务组成员里的引用（调用方已持有 _lock）。"""
+        changed = []
+        for group in self.service_groups.values():
+            hit = False
+            for m in group.members:
+                if m.get("job_name") == old_name:
+                    m["job_name"] = new_name
+                    hit = True
+            if hit:
+                changed.append(group)
+        for group in changed:
+            self.store.upsert_service_group(group)
+        if changed:
+            logger.info(f"service groups updated for rename {old_name} -> {new_name}: "
+                        f"{[g.name for g in changed]}")
 
     def delete_job(self, name: str):
         with self._lock:
