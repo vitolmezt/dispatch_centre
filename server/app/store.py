@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import uuid
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .models import Job, Run, ServiceGroup
+
+logger = logging.getLogger("scheduler-center")
 
 
 def _heartbeat_batch_sec() -> float:
@@ -114,6 +117,10 @@ class Store:
 
         name 是主键，直接 upsert 新名会留下旧名那条记录，造成同一条任务出现两份，
         所以改名必须是「先删旧、再写新」且在同一事务里完成。
+
+        同时回填历史执行记录：runs 表里所有 job_name=old_name 的记录，其独立
+        job_name 列和 run_json 内嵌的 job_name 都更新为 job.name，保证改名后
+        执行历史 / 看板排行按新名归并（产品语义：历史随任务改名）。
         """
         with self._lock:
             c = self._conn.cursor()
@@ -134,6 +141,27 @@ class Store:
                     "created_at=excluded.created_at",
                     (job.name, json.dumps(job.to_dict()), now, created),
                 )
+                # 回填历史执行记录：独立 job_name 列 + run_json 内嵌 job_name
+                c.execute("SELECT id, run_json FROM runs WHERE job_name=?", (old_name,))
+                moved_rows = c.fetchall()
+                for r in moved_rows:
+                    try:
+                        payload = json.loads(r["run_json"])
+                    except (TypeError, ValueError):
+                        # run_json 损坏/不是合法 JSON：只迁独立 job_name 列，
+                        # 不覆盖原始内容，避免进一步破坏该记录
+                        c.execute("UPDATE runs SET job_name=? WHERE id=?",
+                                  (job.name, r["id"]))
+                        continue
+                    if payload.get("job_name") == old_name:
+                        payload["job_name"] = job.name
+                    c.execute(
+                        "UPDATE runs SET job_name=?, run_json=? WHERE id=?",
+                        (job.name, json.dumps(payload, ensure_ascii=False), r["id"]),
+                    )
+                if moved_rows:
+                    logger.info("rename_job: 回填 %d 条历史执行记录 %s -> %s",
+                                len(moved_rows), old_name, job.name)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -189,6 +217,36 @@ class Store:
             self._conn.commit()
 
 
+    def _run_from_row(self, row) -> Run:
+        """从 runs 表一行构造 Run；run_json 缺失/损坏时用独立列兜底。"""
+
+        def _fallback() -> "Optional[Run]":
+            kwargs = {
+                "id": row["id"],
+                "job_name": row["job_name"] or "unknown",
+                "job_type": row["job_type"] or "COMMAND",
+                "status": row["status"] or "UNKNOWN",
+                "start": row["started_at"],
+                "end": row["ended_at"],
+            }
+            try:
+                return Run(**kwargs)
+            except Exception:  # noqa: BLE001
+                return None
+
+        raw = row["run_json"]
+        if isinstance(raw, str):
+            try:
+                payload = json.loads(raw)
+            except (TypeError, ValueError):
+                payload = None
+            if isinstance(payload, dict):
+                try:
+                    return Run.from_dict(payload)
+                except (TypeError, ValueError):
+                    pass
+        return _fallback()
+
     def save_run(self, run: Run, heartbeat_only: bool = False):
         now = datetime.now(timezone.utc).isoformat()
         if heartbeat_only:
@@ -219,9 +277,9 @@ class Store:
             self._conn.commit()
 
     def _run_query(self, /, status=None, job_name=None, job_type=None,
-                   name_like=None, sort=None, order="desc",
-                   offset=None, limit=None):
-        sql = "SELECT run_json FROM runs WHERE 1=1"
+                       name_like=None, sort=None, order="desc",
+                       offset=None, limit=None):
+        sql = "SELECT * FROM runs WHERE 1=1"
         params: List[Any] = []
         if status:
             sql += " AND status=?"
@@ -257,7 +315,7 @@ class Store:
                                       offset=offset, limit=limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
-        return [Run.from_dict(json.loads(r["run_json"])) for r in rows]
+        return [self._run_from_row(r) for r in rows]
 
     def count_runs(self, *, status=None, job_name=None, job_type=None, name_like=None) -> int:
         sql = "SELECT COUNT(*) FROM runs WHERE 1=1"
@@ -285,21 +343,21 @@ class Store:
     def get_run(self, run_id: str) -> Optional[Run]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT run_json FROM runs WHERE id=?", (run_id,)
+                "SELECT * FROM runs WHERE id=?", (run_id,)
             ).fetchone()
         if row is None:
             return None
-        return Run.from_dict(json.loads(row["run_json"]))
+        return self._run_from_row(row)
 
     def running_runs(self) -> List[Run]:
         states = ("STARTING", "RUNNING", "ORPHANED", "UNKNOWN")
         if not states:
             return []
-        sql = "SELECT run_json FROM runs WHERE status IN ({})".format(
+        sql = "SELECT * FROM runs WHERE status IN ({})".format(
             ",".join("?" * len(states)))
         with self._lock:
             rows = self._conn.execute(sql, tuple(states)).fetchall()
-        return [Run.from_dict(json.loads(r["run_json"])) for r in rows]
+        return [self._run_from_row(r) for r in rows]
 
     def running_process_count(self) -> int:
         states = ("STARTING", "RUNNING", "ORPHANED")
