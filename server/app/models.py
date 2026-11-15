@@ -1,22 +1,3 @@
-"""数据模型：Job(配置映射的菜单项) 与 Run(某次执行实例).
-
-文档约定：Job.type / Run.status / Run.trigger 一律使用大写英文缩写
-（见 constants.py），前端通过 /api/constants 的字典映射成中文显示。
-
-配置风格（参考 crawler 项目）：
-    每条 Job 先由 type 决定「菜的类型」，再在 params 里按类型写各自的参数。
-    例：
-      { "name": "打开记事本", "type": "PROGRAM",
-        "params": { "path": "C:/Windows/System32/notepad.exe", "detach": true },
-        "schedule": null, "enabled": true, "description": "..." }
-
-    各类型 params 字段：
-      COMMAND:  command(命令串,必填), workdir(工作目录), env
-      SCRIPT:   path(脚本路径,必填), args, workdir, env
-      PROGRAM:  path(程序路径,必填), args, workdir, env, detach(是否进程独立/后台常驻)
-      FILEOP:   action(delete_file|delete_dir|copy|move), source, target,
-                recursive(仅删除目录用)
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
@@ -34,7 +15,6 @@ def _as_run_state(v: Any) -> str:
     return str(v).strip().upper()
 
 
-# 各类型 params 必填/可选字段说明（供前端展示 & 校验）
 JOB_PARAM_SCHEMA: Dict[str, Dict[str, Any]] = {
     "COMMAND": {
         "label": "命令",
@@ -106,11 +86,8 @@ class Job:
         if self.type == "COMMAND":
             return str(self.params.get("command", ""))
         return str(self.params.get("path", ""))
-
-    # ---- 兼容旧扁平字段：把 legacy 标签映射到 params ----
     def _params(self, d: Dict[str, Any]) -> Dict[str, Any]:
         params = dict(d.get("params") or {})
-        # 兼容旧配置里扁平字段
         if "command" in d or "path" in d:
             legacy = {}
             for k in ("command", "path"):
@@ -122,7 +99,6 @@ class Job:
                 legacy["workdir"] = d["workdir"]
             if "detach" in d:
                 legacy["detach"] = d["detach"]
-            # 新 params 优先，其次用 legacy 补齐
             legacy.update(params)
             params = legacy
         if d.get("env"):
@@ -169,12 +145,6 @@ class Job:
 
 @dataclass
 class ServiceGroup:
-    """一个「服务组」：把若干常驻(detach)任务编排为一键启动/停止的服务组.
-
-    members 里的每一项引用一个【已存在的 Job】名（通常 detach=True 常驻），
-    不重复定义子任务，仅描述"这一组要一起拉起哪些服务、以何顺序启动"。
-    order 越小越先启动；start_group 按 order 升序逐个触发成员 Job。
-    """
 
     name: str
     members: List[Dict[str, Any]] = field(default_factory=list)  # [{job_name, label, order}]
@@ -311,8 +281,6 @@ class Run:
 
 
 def _next_run(schedule: Optional[str]) -> Optional[str]:
-    """根据 cron 表达式推算下一次触发时间（本地时区）。
-    仅用于展示；实际调度仍由 APScheduler 的注册 trigger 决定。"""
     if not schedule:
         return None
     try:

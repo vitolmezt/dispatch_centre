@@ -28,7 +28,6 @@ const router = useRouter()
 const route = useRoute()
 const loggedIn = ref(!!getToken())
 
-// 会话失效（401）→ 清理本地 token + 断开 SSE → 回登录页
 function handleUnauthorized() {
   clearAuth()
   disconnectRealtime()
@@ -36,7 +35,6 @@ function handleUnauthorized() {
   if (router.currentRoute.value.path !== '/login') router.replace('/login')
 }
 document.addEventListener('sc:unauthorized', handleUnauthorized)
-// 登录成功 → 建立实时连接并切换登录态（路由跳转不会重新挂载 App）
 function handleAuthenticated() {
   loggedIn.value = true
   loadConstants().catch(() => {})

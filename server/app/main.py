@@ -450,10 +450,8 @@ def config_info():
 def run_log_stream(run_id: str):
     s = get_scheduler()
 
-    # 若是历史（不在运行中），直接以结束哨兵收尾，避免空等
     mem = s.get_running(run_id)
     if mem is None:
-        # 无运行实例也无日志文件 → 404
         if s.store.get_run(run_id) is None and not s.read_log_file(run_id):
             raise HTTPException(status_code=404, detail="run 不存在")
         def done():

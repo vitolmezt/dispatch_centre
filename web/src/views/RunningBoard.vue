@@ -18,7 +18,6 @@ const statusFilter = ref('')
 
 const typeOptions = Object.entries(dict.groups?.JOB_TYPE || {}).map(([v, l]) => ({ v, l }))
 const statusOptions = [
-  { v: '', l: '全部状态' },
   { v: 'PENDING', l: '待开始' },
   { v: 'RUNNING', l: '正常运行' },
   { v: 'STARTING', l: '预登记中' },
@@ -151,8 +150,8 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
             <el-option v-for="o in typeOptions" :key="o.v" :value="o.v" :label="o.l" />
           </el-select>
         </el-form-item>
-        <el-form-item label="状态">
-          <el-select v-model="statusFilter" style="width:130px">
+        <el-form-item label="执行状态">
+          <el-select v-model="statusFilter" placeholder="全部状态" clearable style="width:130px">
             <el-option v-for="o in statusOptions" :key="o.v" :value="o.v" :label="o.l" />
           </el-select>
         </el-form-item>

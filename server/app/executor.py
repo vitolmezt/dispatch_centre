@@ -1,11 +1,3 @@
-"""进程执行器：跨平台 spawn 命令/脚本/程序，流式抓日志，PID 可中止，超时判定.
-
-调度中心不关心 Job 内部做什么，它只负责：
-  1. 读取 Job.params（类型专属参数）
-  2. 对 COMMAND/SCRIPT/PROGRAM 拼出可执行命令并 spawn
-  3. 对 FILEOP 直接执行文件系统操作
-  4. 记录 PID、退出码、实时输出；支持中止(kill)与超时
-"""
 from __future__ import annotations
 
 import locale
@@ -20,8 +12,6 @@ from typing import Dict, List, Optional
 from .models import Job, Run
 from . import identity as identity_mod
 
-# 子进程文本解码编码：跟随系统区域语言（Windows 中文系统为 GBK/cp936）。
-# 不硬编码单一编码：行解码时先试 UTF-8 严格，失败回退该系统编码（自动识别两种常见输出）。
 _IO_ENCODING = locale.getpreferredencoding(False) or "utf-8"
 
 
@@ -34,37 +24,24 @@ def _decode_line(raw: bytes) -> str:
         return no_lf.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         return no_lf.decode(_IO_ENCODING, errors="replace")
-
-
-# 执行权限设计：调度中心是通用黑盒任务执行平台，不审查任务内部业务行为。
-# 管理员经认证后即可执行任意符合操作系统条件的命令/脚本/程序/文件操作，
-# 实际权限以调度中心运行账户拥有的 OS 权限为准。路径解析与执行错误交由
-# 操作系统和执行器正常返回，不在此处做目录白名单/安全根强制拦截。
-
-
 class Executor:
     """负责把 Job 变成真实的 OS 子进程 / 文件操作流程."""
 
     def __init__(self, runner):
         self.runner = runner  # 回引用 Scheduler，用于上报状态
         self._procs: Dict[str, subprocess.Popen] = {}  # run_id -> Popen
-        # run_id 集合：已被用户主动停止/中止的实例。
-        # 读输出的后台线程据此不再用退出码覆盖状态，避免把"主动停止"误标为 FAILED。
         self._user_stopped: set = set()
         self._lock = threading.Lock()
 
-    # ---- 主动停止标记（供 scheduler.stop / self.abort 调用） ----
     def mark_user_stopped(self, run_id: str):
         """记录该 run 是"用户主动停止/中止"，之后的读线程不得用退出码覆盖其状态."""
         with self._lock:
             self._user_stopped.add(run_id)
 
-    # ---- params 便捷访问 ----
     @staticmethod
     def p(job: Job, key: str, default=None):
         return job.params.get(key, default)
 
-    # ---- 平台差异 ----
     @staticmethod
     def _is_windows() -> bool:
         return os.name == "nt"
@@ -105,15 +82,12 @@ class Executor:
             return [path] + list(job.params.get("args") or [])
         raise ValueError(f"不依赖 OS 进程的 Job 类型: {job.type}")
 
-    # ---- FILEOP：文件系统操作（Python 原生，不拉进程） ----
     def _run_fileop(self, job: Job, run: Run) -> bool:
         action = str(job.params.get("action", "")).strip().upper()
         source = job.params.get("source", "")
         target = job.params.get("target", "")
         recursive = bool(job.params.get("recursive", False))
 
-        # 按用户提供的有效路径执行；实际权限由操作系统账户拥有权限决定，
-        # 不在此处做安全根目录强制校验（不存在/无权限的错误交由 OS 正常返回）。
         src = Path(source)
         if action == "DELETE_FILE":
             if not src.exists():
@@ -153,7 +127,6 @@ class Executor:
             raise ValueError(f"不支持的 FILEOP 动作: {action}")
         return True
 
-    # ---- 核心执行 ----
     def run(self, run: Run, job: Job):
         """启动子进程（或执行文件操作），更新 run 状态。在独立线程中调用."""
         run.status = "RUNNING"
@@ -166,7 +139,6 @@ class Executor:
 
         try:
             if job.type == "FILEOP":
-                # 文件系统操作：同步、无进程
                 self._run_fileop(job, run)
                 run.exit_code = 0
                 run.status = "SUCCEEDED"
@@ -174,7 +146,6 @@ class Executor:
                 self.runner.on_finished(run)
                 return
 
-            # ---- 进程类类型 ----
             argv = self._build_argv(job)
             env = os.environ.copy()
             if job.params.get("env"):

@@ -226,7 +226,6 @@ function themeOnlyOption(i) {
   }
 }
 
-/** 纯主题更新：只局部合并颜色，不重算数据、不重播系列动画。 */
 function updateChartTheme() {
   charts.forEach((chart, i) => {
     if (!chart) return
@@ -292,7 +291,6 @@ async function load() {
     stats.value = s
     await nextTick()
     makeCharts()
-    // 小图表高度随行数变化，等一帧后按容器实际尺寸校正画布
     requestAnimationFrame(() => resizeCharts())
   } catch (e) {
     unloadMsg.value = e?.message || String(e)

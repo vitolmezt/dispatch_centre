@@ -113,15 +113,7 @@ class Store:
             self._conn.commit()
 
     def rename_job(self, old_name: str, job: Job):
-        """把 old_name 这一行改名为 job.name，并写入新内容。
 
-        name 是主键，直接 upsert 新名会留下旧名那条记录，造成同一条任务出现两份，
-        所以改名必须是「先删旧、再写新」且在同一事务里完成。
-
-        同时回填历史执行记录：runs 表里所有 job_name=old_name 的记录，其独立
-        job_name 列和 run_json 内嵌的 job_name 都更新为 job.name，保证改名后
-        执行历史 / 看板排行按新名归并（产品语义：历史随任务改名）。
-        """
         with self._lock:
             c = self._conn.cursor()
             now = datetime.now(timezone.utc).isoformat()
