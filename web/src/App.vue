@@ -83,7 +83,9 @@ const menus = [
 </script>
 
 <template>
-  <div class="admin">
+  <RouterView v-if="route.meta?.public" />
+
+  <div v-else class="admin">
     <el-container class="app-shell">
       <el-aside width="220px" class="aside">
         <div class="logo"><span class="logo-mark">S</span>调度中心</div>
