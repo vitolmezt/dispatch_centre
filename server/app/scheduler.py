@@ -308,8 +308,13 @@ class Scheduler:
             self._heartbeat_stop = True
         for run_id in list(self.running.keys()):
             run = self.running.get(run_id)
-            if run:
-                self.abort(run_id)
+            if run is None:
+                continue
+            # 独立后台进程（detach）随服务常驻：停止调度服务不连带中止它，
+            # 交给下次启动的恢复机制按身份核验后重新接管；仅中止非 detach 运行实例。
+            if getattr(run, "detached", False):
+                continue
+            self.abort(run_id)
         self.aps.shutdown(wait=False)
 
     def _trigger_job(self, job_name: str, trigger: str = "manual"):
@@ -367,6 +372,9 @@ class Scheduler:
         for run in candidates:
             try:
                 self._recover_one(run)
+                if run.status == "RUNNING":
+                    with self._lock:
+                        self.running[run.id] = run
             except Exception as e:  # noqa: BLE001
                 logger.error(f"恢复 run[{run.id}] 时异常: {e}")
 

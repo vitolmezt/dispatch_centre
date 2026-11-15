@@ -180,6 +180,50 @@ def t14_identity_alive_starting_running():
     assert s.store.get_run("s2").status == "RUNNING"
     print("[OK] M2 有身份且存活的 STARTING -> RUNNING")
 
+
+def t15_recover_alive_running_registered_in_running_register():
+    """回归：重启恢复"存活 RUNNING"实例后，必须重新登记进 self.running，
+    否则任务列表误判空闲、重复触发不被拦截（触发返回 blocked）。
+    """
+    s = _new_sched()
+    run = _mk_run("live1", "RUNNING", process_create_time="ct-live", pid=902,
+                  detached=True, job_name="keepalive")
+    s.store.save_run(run)
+    from app.models import Job
+    job = Job(name="keepalive", type="COMMAND", params={"command": "ping -t 127.0.0.1"},
+              enabled=True)
+    s.jobs[job.name] = job
+    orig = _patch_alive(True)
+    try:
+        s.recover_on_start()
+    finally:
+        identity_mod.process_is_alive = orig
+    # 核心：存活实例必须回到 running 表
+    assert run.id in s.running, f"存活 RUNNING 未登记进 running（当前={list(s.running.keys())}）"
+    assert s.running[run.id].status == "RUNNING"
+    # 派生效果：重复触发被拦截（任务不应显示为空闲可重跑）
+    assert s.trigger("keepalive") == "blocked", "恢复的存活实例未拦截重复触发"
+    print("[OK] M2 存活 RUNNING 重启后登记进 running 表，任务判运行中、阻塞重复触发")
+
+
+def t16_shutdown_skips_detached():
+    """回归：停止调度服务（Ctrl+C）不得连带中止独立后台进程(detach)，
+    仅中止普通任务；独立进程交给下次启动的四问接管恢复。
+    """
+    s = _new_sched()
+    d = _mk_run("det1", "RUNNING", detached=True, pid=9011, process_create_time="ct-d")
+    n = _mk_run("nor1", "RUNNING", detached=False, pid=9012, process_create_time="ct-n")
+    s.running["det1"] = d
+    s.running["nor1"] = n
+    aborted = []
+    s.abort = lambda rid: aborted.append(rid)  # 记录 shutdown 实际调用了 abort 的 run_id
+    s.aps.shutdown = lambda wait=False: None
+    s.shutdown()
+    assert "det1" not in aborted, f"独立进程(detach)不应在 shutdown 被中止: {aborted}"
+    assert "nor1" in aborted, f"普通任务应在 shutdown 被中止: {aborted}"
+    print("[OK] M2 shutdown 跳过独立(detach)，仅中止普通运行实例")
+
+
 def t20_within_timeout():
     S = Scheduler
     old = (datetime.now().astimezone().timestamp() - 1)
@@ -410,6 +454,8 @@ def _main():
         t04_running_runs_grouping, t05_trigger_starting_pre_registration,
         t10_residual_starting_no_identity_unknown, t11_phase1_leftover_running_unknown,
         t12_dead_proc_interrupted, t13_alive_orphan_resume, t14_identity_alive_starting_running,
+        t15_recover_alive_running_registered_in_running_register,
+        t16_shutdown_skips_detached,
         t20_within_timeout, t21_heartbeat_timeout_dead_interrupted,
         t22_heartbeat_timeout_alive_no_kill,
         t30_safe_kill_identity_mismatch_refusal, t31_safe_kill_no_credential,
