@@ -210,6 +210,12 @@ class Run:
     interrupted_reason: str = ""
     adopted: bool = False
     retryable: bool = False
+    # 日志读取偏移量：重启接管时从该位置续读，避免重复推送历史日志
+    log_offset: int = 0
+    # 命令是否经过 shell 包装（true 表示被记录的 pid 是 shell，真实进程是孙进程）
+    via_shell: bool = False
+    # Job 隔离缺失告警（非空表示该次运行未能获得 Job 级隔离）
+    isolation_warning: str = ""
 
     def __post_init__(self):
         self.status = _as_run_state(self.status)
@@ -274,6 +280,9 @@ class Run:
             "interrupted_reason": self.interrupted_reason,
             "adopted": self.adopted,
             "retryable": self.retryable,
+            "log_offset": self.log_offset,
+            "via_shell": self.via_shell,
+            "isolation_warning": self.isolation_warning,
         }
         if include_log:
             d["log"] = self.log

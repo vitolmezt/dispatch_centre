@@ -140,8 +140,6 @@ def update_job(name: str, payload: dict = Body(...)):
     if old is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
     data = dict(payload)
-    # 允许改名：payload 里的 name 优先；未提供时沿用路径里的名字。
-    # 注意不能无条件覆盖成路径名，否则改名会被静默丢弃。
     new_name = str(data.get("name") or "").strip() or name
     data["name"] = new_name
     if new_name != name and new_name in s.jobs:
@@ -337,7 +335,10 @@ def abort_run(run_id: str, request: Request):
 def stop_run(run_id: str, request: Request):
     result = get_scheduler().stop(run_id)
     if not result.get("ok"):
-        raise HTTPException(status_code=404, detail="找不到该运行记录")
+        reason = str(result.get("reason") or "")
+        if reason == "run_not_found":
+            raise HTTPException(status_code=404, detail="找不到该运行记录")
+        raise HTTPException(status_code=409, detail=reason or "停止失败")
     audit.audit("run.stop", operator=_bearer_token(request)[:6], obj=run_id,
                 detail=result.get("reason", ""))
     return result
