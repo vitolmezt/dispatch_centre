@@ -32,3 +32,8 @@ Thumbs.db
 # temp/scratch test dirs
 server/tmp_servicetest/
 server/tmp_*/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/

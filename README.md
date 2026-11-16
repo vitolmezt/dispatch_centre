@@ -346,9 +346,13 @@ scheduler-center/
     requirements.txt
     run.py           # 前台启动入口（终端内运行，会受终端 Job 约束）
     run_headless.py  # 无界面启动器（计划任务方式，任务可独立存活）
-    test_phase2_recovery.py   # 恢复/身份/心跳测试（26 项）
-    test_process_decouple.py  # 进程解耦与 Job 语义测试（23 项）
-    test_security.py          # 安全与回归测试（12 项）
+    pytest.ini       # pytest 配置与自定义标记
+    tests/           # pytest 测试套件（96 项，详见 tests/README.md）
+      conftest.py               # 环境初始化 + 共享 fixture
+      test_process_decouple.py  # 进程解耦与 Job 语义（33）
+      test_phase2_recovery.py   # 恢复/身份/心跳（29）
+      test_security.py          # 鉴权与契约回归（34）
+      README.md                 # 每个用例的作用说明
   web/               # Vue 3 + Element Plus 前端
     src/
       views/         # DashboardBoard / MenuBoard / RunningBoard / HistoryBoard / ServiceGroupBoard
@@ -364,12 +368,24 @@ scheduler-center/
 
 ## 九、测试
 
+基于 pytest，共 **96 项**（参数化展开后）。每个用例的详细作用见 `server/tests/README.md`。
+
 ```powershell
 cd server
-python test_process_decouple.py   # 23 项
-python test_phase2_recovery.py    # 26 项
-python test_security.py           # 12 项
+pip install -r requirements.txt   # 已含 pytest
+pytest                            # 全部
+pytest -v                         # 显示用例名
+pytest -m "not slow"              # 跳过真实起进程/等超时的用例
+pytest tests/test_security.py     # 单文件
 ```
+
+测试分三部分：
+
+| 文件 | 项数 | 覆盖 |
+|---|---|---|
+| `tests/test_process_decouple.py` | 33 | shell 判定、日志续读、detach 标志、命名 Job、停止安全性 |
+| `tests/test_phase2_recovery.py` | 29 | 启动恢复、心跳判死、四问接管、SAFE-FIRST、状态广播 |
+| `tests/test_security.py` | 34 | 23 个端点未认证 401、限流、SSE、路径权限、非 0 退出语义 |
 
 前端构建回归：
 
