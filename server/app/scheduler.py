@@ -379,175 +379,51 @@ class Scheduler:
         candidates = self.store.running_runs()
         for run in candidates:
             try:
-                # Host 托管的任务优先向 Task Host 核实（它能给出权威的真实状态）
-                if self._recover_via_host(run):
-                    continue
                 self._recover_one(run)
                 if run.status == "RUNNING":
                     with self._lock:
                         self.running[run.id] = run
             except Exception as e:  # noqa: BLE001
                 logger.error(f"恢复 run[{run.id}] 时异常: {e}")
-
-        # 一致性核对：数据库里已是终态、但 Task Host 说仍在运行的记录。
-        # 这类不一致不会进入上面的非终态候选，必须单独检查，否则会长期存在
-        # 「界面显示已结束、进程其实还在跑」的情况。
         try:
-            self._reconcile_with_host()
+            self._reconcile_terminal_runs()
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"与 Task Host 状态核对失败: {e}")
+            logger.warning(f"终态记录一致性核对失败: {e}")
 
-    def _reconcile_with_host(self):
-        """核对终态记录与 Task Host 的真实状态，修正不一致。"""
-        if not getattr(self.executor, "_host_enabled", False):
-            return
-        from . import host_launcher as HL
-        if not HL.host_alive():
-            return
-        try:
-            rl = HL.request("GET", "/running", timeout=15)
-        except Exception:  # noqa: BLE001
-            return
-        host_running = {i.get("run_id"): i for i in (rl.get("items") or [])}
-        if not host_running:
-            return
-
+    def _reconcile_terminal_runs(self):
         fixed = 0
         for run in self.store.recent_runs(200):
-            if run.id not in host_running:
-                continue
             if run.status in ("RUNNING", "STARTING", "ORPHANED", "UNKNOWN"):
-                continue  # 已是非终态，上面的恢复流程会处理
-            info = host_running[run.id]
+                continue  # 非终态已由 _recover_one 处理
+            pid = getattr(run, "pid", None)
+            if not pid:
+                continue
+            if not identity_mod.verify_identity(run, pid):
+                continue
+            if not identity_mod.process_is_alive(run, pid):
+                continue
+
             prev = run.status
             run.status = "RUNNING"
-            run.pid = info.get("pid") or run.pid
-            run.process_create_time = (info.get("process_create_time")
-                                       or run.process_create_time)
-            run.log_path = info.get("log_path") or run.log_path
             run.end = None
             run.exit_code = None
             run.error = ""
             run.interrupted_reason = (
                 f"状态不一致已修正：数据库原为 {prev}，"
-                f"Task Host 确认进程仍在运行（pid={run.pid}）")
+                f"但进程仍在运行（pid={pid}），已按运行中接管")
             run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
             self.store.save_run(run)
             self._publish_status_change(run)
             with self._lock:
                 self.running[run.id] = run
-            t = threading.Thread(target=self._host_watch_loop, args=(run,),
-                                 name=f"host-watch-{run.id}", daemon=True)
+            t = threading.Thread(target=self._detached_watch_loop, args=(run,),
+                                 name=f"reconcile-watch-{run.id}", daemon=True)
             t.start()
             fixed += 1
             logger.warning(
-                f"状态不一致已修正 run[{run.id}]: db={prev} -> RUNNING"
-                f"（Task Host 仍在托管 pid={run.pid}）")
+                f"状态不一致已修正 run[{run.id}]: db={prev} -> RUNNING (pid={pid})")
         if fixed:
-            logger.info(f"与 Task Host 核对完成：修正 {fixed} 条不一致记录")
-
-    def _recover_via_host(self, run: Run) -> bool:
-        """向 Task Host 查询该 run 的真实状态并接管。返回 True 表示已处理。
-
-        与本地恢复相比，Host 是任务的真实管理者，它的答复比本地探针更可靠：
-        Host 说还在跑，就一定在跑（进程由它托管）；Host 说结束了，
-        还能提供真实退出码。
-        """
-        if not getattr(self.executor, "_host_enabled", False):
-            return False
-        try:
-            from . import host_launcher as HL
-            if not HL.host_alive():
-                return False
-            st = HL.request("GET", f"/status?run_id={run.id}", timeout=10)
-        except Exception:  # noqa: BLE001
-            return False
-
-        if st.get("error") == "run_not_found":
-            return False  # Host 无记录，交给本地恢复逻辑
-
-        if st.get("alive"):
-            # 状态一致性：数据库可能已是终态（例如曾被标 KILLED），而 Host 说还在跑。
-            # 这是两边记录不一致，不能静默覆盖——保留原状态到恢复说明里，并如实告知。
-            prev_status = run.status
-            if prev_status not in ("RUNNING", "STARTING", "ORPHANED", "UNKNOWN"):
-                run.interrupted_reason = (
-                    f"状态不一致：数据库原记录为 {prev_status}，"
-                    f"但 Task Host 确认进程仍在运行（pid={st.get('pid')}），已按实际运行接管")
-                logger.warning(
-                    f"恢复 run[{run.id}] 状态不一致: db={prev_status} host=RUNNING，按运行中接管")
-            else:
-                run.interrupted_reason = ""
-            run.status = "RUNNING"
-            run.pid = st.get("pid") or run.pid
-            run.process_create_time = st.get("process_create_time") or run.process_create_time
-            run.log_path = st.get("log_path") or run.log_path
-            run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
-            self.store.save_run(run)
-            self._publish_status_change(run)
-            with self._lock:
-                self.running[run.id] = run
-            logger.info(f"恢复 run[{run.id}] Task Host 确认存活 -> RUNNING（不重新启动）")
-            # 重建日志跟随与状态监控
-            t = threading.Thread(target=self._host_watch_loop, args=(run,),
-                                 name=f"host-watch-{run.id}", daemon=True)
-            t.start()
-            return True
-
-        # Host 说已结束：用其记录的退出码落定，不伪造
-        rc = st.get("exit_code")
-        run.exit_code = rc if isinstance(rc, int) else None
-        run.end = run.end or datetime.now().astimezone().isoformat(timespec="seconds")
-        if run.exit_code == 0:
-            run.status = "SUCCEEDED"
-            run.error = ""
-        else:
-            run.status = "INTERRUPTED"
-            if run.exit_code is None:
-                run.interrupted_reason = "Task Host 报告任务已结束，但无可靠退出码凭证"
-                run.error = "退出码未知（无可靠凭证）"
-            else:
-                run.interrupted_reason = f"进程非 0 退出（exit={run.exit_code}），已判定为异常退出"
-                run.error = f"退出码 {run.exit_code}（异常退出）"
-        self.store.save_run(run)
-        self._publish_status_change(run)
-        logger.info(f"恢复 run[{run.id}] Task Host 报告已结束 -> {run.status}")
-        return True
-
-    def _host_watch_loop(self, run: Run):
-        """Host 托管任务的恢复后监控：跟随日志 + 轮询 Host 状态。"""
-        from . import host_launcher as HL
-        log_path = run.log_path or ""
-        pos = int(getattr(run, "log_offset", 0) or 0)
-        try:
-            if log_path and os.path.isfile(log_path) and os.path.getsize(log_path) < pos:
-                pos = 0
-        except OSError:
-            pass
-
-        while not self._heartbeat_stop:
-            try:
-                with self._lock:
-                    cur = self.running.get(run.id)
-                if cur is None or cur.status not in ("RUNNING", "ORPHANED"):
-                    return
-                if log_path:
-                    pos = self.executor._pump_log(run, log_path, pos)
-                st = HL.request("GET", f"/status?run_id={run.id}", timeout=10)
-                if st.get("error") == "run_not_found":
-                    self._mark_detached_gone(run)
-                    return
-                if not st.get("alive"):
-                    pos = self.executor._pump_log(run, log_path, pos)
-                    rc = st.get("exit_code")
-                    run.exit_code = rc if isinstance(rc, int) else None
-                    self._mark_detached_gone(run)
-                    return
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"host 监控 run[{run.id}] 异常: {e}")
-            if self._heartbeat_stop:
-                return
-            time.sleep(1)
+            logger.info(f"终态记录核对完成：修正 {fixed} 条不一致记录")
 
     def _resume_detached_monitor(self, run: Run):
         t = threading.Thread(target=self._detached_watch_loop, args=(run,),
@@ -556,11 +432,6 @@ class Scheduler:
         logger.info(f"恢复 run[{run.id}] detach 监控已重建 (pid={run.pid})")
 
     def _detached_watch_loop(self, run: Run):
-        """轮询跟随日志文件并监控 pid；进程消失则落定为 INTERRUPTED 并归入历史。
-
-        日志从 run.log_offset 续读——这个偏移量在调度中心退出前已持久化，
-        因此离线期间产生的日志不会丢，也不会把历史日志重复推一遍。
-        """
         log_path = run.log_path or ""
         pos = int(getattr(run, "log_offset", 0) or 0)
         try:
@@ -742,31 +613,6 @@ class Scheduler:
         if not pid:
             return {"ok": True, "stop": False, "reason": "no_pid"}
 
-        # Host 托管模式：交由 Task Host 停止（它持有真实进程关系与 Job 上下文）
-        if getattr(self.executor, "_host_enabled", False):
-            from . import host_launcher as HL
-            try:
-                if HL.host_alive():
-                    resp = HL.request("POST", "/stop", {"run_id": run_id}, timeout=30)
-                    if resp.get("stop"):
-                        self.executor.mark_user_stopped(run.id)
-                        with self._lock:
-                            in_running = run.id in self.running
-                        if in_running:
-                            self._finalize_user_stop(run, "用户停止", "KILLED")
-                        return {"ok": True, "stop": True, "pid": pid,
-                                "reason": "killed" if in_running else "already_stopped",
-                                "via": "task_host"}
-                    # Host 明确拒绝（如身份核验失败）时如实返回，不退回盲目本地杀
-                    if resp.get("reason") == "run_not_found":
-                        pass  # 落到下面的本地逻辑（Host 已无记录）
-                    else:
-                        return {"ok": False, "stop": False, "pid": pid,
-                                "reason": resp.get("reason") or "Task Host 拒绝停止",
-                                "via": "task_host"}
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"经 Task Host 停止失败，回退本地: {e}")
-
         identity_ok = identity_mod.verify_identity(run, pid)
         if not identity_ok:
             still = self._pid_exists_raw(pid)
@@ -776,11 +622,19 @@ class Scheduler:
                 "process_still_exists": still,
             }
 
-        reason = identity_mod.safe_kill(run, pid, group_id=run.process_group_id)
-        if reason is not None:
-            if identity_mod.process_is_alive(run, pid):
-                return {"ok": False, "stop": False, "pid": pid, "reason": reason}
-            reason = None
+        stop_via = "tree"
+        if self.executor._job_terminate(run.id):
+            stop_via = "job"
+            for _ in range(30):
+                if not identity_mod.process_is_alive(run, pid):
+                    break
+                time.sleep(0.2)
+        else:
+            reason = identity_mod.safe_kill(run, pid, group_id=run.process_group_id)
+            if reason is not None:
+                if identity_mod.process_is_alive(run, pid):
+                    return {"ok": False, "stop": False, "pid": pid, "reason": reason}
+                reason = None
         orphan_note = ""
         if getattr(run, "via_shell", False):
             orphan_note = self._sweep_shell_orphans(run)
@@ -790,8 +644,10 @@ class Scheduler:
             in_running = run.id in self.running
         if in_running:
             self._finalize_user_stop(run, "用户停止", "KILLED")
+        self.executor._job_close(run.id)
         res = {"ok": True, "stop": True, "pid": pid,
-               "reason": "killed" if in_running else "already_stopped"}
+               "reason": "killed" if in_running else "already_stopped",
+               "stop_via": stop_via}
         if orphan_note:
             res["orphan_sweep"] = orphan_note
         return res

@@ -20,8 +20,6 @@ from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix="sc_decouple_")
 os.environ.setdefault("SC_NODE_ID", "unit-node")
-# 单元测试不依赖外部 Task Host（生产默认启用，见 Executor.use_host）
-os.environ["SC_USE_TASK_HOST"] = "0"
 
 from app.executor import Executor
 from app.models import Job, Run
@@ -330,56 +328,60 @@ def t19_shell_orphan_sweep_exists():
     print("[OK] via_shell 停止时具备精确的孤儿清理")
 
 
-def t20_task_host_named_job_no_kill_on_close():
-    """Task Host 的命名 Job 必须不设 KILL_ON_JOB_CLOSE。
+def t20_instance_job_no_kill_on_close():
+    """每实例命名 Job 必须不启用 KILL_ON_JOB_CLOSE。
 
-    这是三级生命周期的技术前提：Host 崩溃时其 Job 句柄关闭，
+    这是「任务不依赖调度中心存活」的技术前提：调度中心退出时其 Job 句柄关闭，
     若设了 KILL_ON_JOB_CLOSE 会把任务一起带走。
     """
-    src = (Path(__file__).resolve().parent / "task_host.py").read_text(encoding="utf-8")
-    assert "_create_job" in src, "缺少 Job 创建逻辑"
+    src = (Path(__file__).resolve().parent / "app" / "executor.py").read_text(encoding="utf-8")
+    assert "_job_attach" in src, "缺少每实例 Job 建立逻辑"
     assert "info.Basic.LimitFlags = 0" in src, "Job 未显式清零 LimitFlags"
-    # 不得在任何地方把 KILL_ON_JOB_CLOSE 设进自己的 Job
-    assert "0x00002000" not in src.split("def _create_job")[1].split("def _assign_to_job")[0], \
-        "Job 创建处出现了 KILL_ON_JOB_CLOSE 常量"
-    print("[OK] Task Host 命名 Job 不设 KILL_ON_JOB_CLOSE")
+    seg = src.split("def _job_attach")[1].split("def _job_terminate")[0]
+    assert "0x00002000" not in seg, "Job 建立处出现了 KILL_ON_JOB_CLOSE 常量"
+    print("[OK] 每实例命名 Job 不启用 KILL_ON_JOB_CLOSE")
 
 
-def t21_task_host_resume_and_selfcheck():
-    """Task Host 必须具备启动重连与自身 Job 自检能力。"""
-    src = (Path(__file__).resolve().parent / "task_host.py").read_text(encoding="utf-8")
-    assert "def resume_monitoring" in src, "缺少启动重连"
-    assert "def self_job_check" in src, "缺少自身 Job 自检"
-    # 自检结果要写进 endpoint，便于外部核对
-    assert "job_self_check" in src, "自检结果未落盘"
-    # 重连必须做身份核验（pid + 创建时刻），不能只按 pid
-    i = src.index("def resume_monitoring")
-    block = src[i:i + 2000]
-    assert "process_create_time" in block, "重连未做创建时刻核验"
-    print("[OK] Task Host 具备启动重连与自身 Job 自检")
+def t21_headless_launcher_exists():
+    """必须提供让调度中心脱离受限 Job 的启动方式。"""
+    b = Path(__file__).resolve().parent
+    lh = b / "run_headless.py"
+    assert lh.exists(), "缺少 run_headless.py"
+    src = lh.read_text(encoding="utf-8")
+    assert "schtasks" in src, "未通过计划任务启动"
+    assert "SCHTASKS" in src.upper(), "缺少计划任务常任务名"
+    run_py = (b / "run.py").read_text(encoding="utf-8")
+    assert "SC_PORT" in run_py, "run.py 未支持 SC_PORT"
+    print("[OK] 提供计划任务式无界面启动，且 run.py 支持端口覆盖")
 
 
-def t22_stop_falls_back_to_tree():
-    """Host 重连后的任务没有 Job 句柄，停止必须回退到进程树。"""
-    src = (Path(__file__).resolve().parent / "task_host.py").read_text(encoding="utf-8")
-    i = src.index("def stop_task")
-    block = src[i:i + 2500]
-    assert "_terminate_job" in block, "stop 未尝试用 Job 终止"
-    assert "taskkill_tree" in block, "stop 未保留进程树回退"
+def t22_stop_uses_job_then_tree():
+    """停止应优先用 Job 句柄终止整组，无句柄时回退进程树并记录途径。"""
+    src = (Path(__file__).resolve().parent / "app" / "scheduler.py").read_text(encoding="utf-8")
+    i = src.index("    def stop(self")
+    rest = src[i + 10:]
+    m = rest.find("\n    def ")
+    block = rest[:m] if m > 0 else rest
+    assert "_job_terminate" in block, "stop 未尝试用 Job 终止"
+    assert "safe_kill" in block, "stop 未保留进程树回退"
     assert "stop_via" in block, "未记录停止途径"
     print("[OK] 停止优先 Job、回退进程树")
 
 
-def t23_state_reconcile_exists():
-    """Scheduler 必须有终态记录与 Task Host 的一致性核对。"""
+def t23_terminal_run_reconcile_exists():
+    """Scheduler 必须核对终态记录与真实进程状态的一致性。"""
     src = (Path(__file__).resolve().parent / "app" / "scheduler.py").read_text(encoding="utf-8")
-    assert "_reconcile_with_host" in src, "缺少状态一致性核对"
+    assert "_reconcile_terminal_runs" in src, "缺少终态记录一致性核对"
     i = src.index("def recover_on_start")
-    block = src[i:i + 1200]
-    assert "_reconcile_with_host" in block, "recover_on_start 未调用一致性核对"
-    # 核对要覆盖终态记录（只看非终态会漏掉「显示已结束但仍在跑」）
+    rest = src[i + 10:]
+    m = rest.find("\n    def ")
+    block = rest[:m] if m > 0 else rest
+    assert "_reconcile_terminal_runs" in block, "recover_on_start 未调用一致性核对"
     assert "recent_runs" in src, "未查询终态记录"
-    print("[OK] 存在终态记录与 Task Host 的一致性核对")
+    j = src.index("def _reconcile_terminal_runs")
+    seg = src[j:j + 2000]
+    assert "verify_identity" in seg, "核对未做身份核验"
+    print("[OK] 存在终态记录一致性核对（含身份核验）")
 
 
 def main():
@@ -403,10 +405,10 @@ def main():
         t17_job_environment_probe,
         t18_isolation_warning_field_roundtrip,
         t19_shell_orphan_sweep_exists,
-        t20_task_host_named_job_no_kill_on_close,
-        t21_task_host_resume_and_selfcheck,
-        t22_stop_falls_back_to_tree,
-        t23_state_reconcile_exists,
+        t20_instance_job_no_kill_on_close,
+        t21_headless_launcher_exists,
+        t22_stop_uses_job_then_tree,
+        t23_terminal_run_reconcile_exists,
     ]
     passed = 0
     for fn in fns:

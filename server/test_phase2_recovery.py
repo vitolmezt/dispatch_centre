@@ -11,8 +11,6 @@ os.environ.setdefault("SC_NODE_ID", "unit-node")
 os.environ["SC_HEARTBEAT_INTERVAL_SEC"] = "2"
 os.environ["SC_HEARTBEAT_TIMEOUT_TIMES"] = "2"
 os.environ["SC_HEARTBEAT_BATCH_SEC"] = "60"
-# 单元测试不依赖外部 Task Host（生产默认启用，见 Executor.use_host）
-os.environ["SC_USE_TASK_HOST"] = "0"
 
 from app import identity as identity_mod
 from app.constants import STATUS, RUN_STATES, ALL_GROUPS

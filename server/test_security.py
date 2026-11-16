@@ -17,9 +17,6 @@ os.environ.pop("SC_EXEC_ROOT", None)
 os.environ["SC_TOKEN"] = _TEST_TOKEN
 os.environ["SC_DB"] = os.path.join(_TMP, "security.db")
 os.environ["SC_ALLOW_ORIGINS"] = "http://127.0.0.1:9999"
-# 单元测试不依赖外部 Task Host：显式走进程内执行路径。
-# （生产默认启用 Task Host，见 executor.Executor.use_host）
-os.environ["SC_USE_TASK_HOST"] = "0"
 
 from app.main import app
 from app.models import Job, Run

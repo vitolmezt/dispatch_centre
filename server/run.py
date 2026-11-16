@@ -40,10 +40,14 @@ class _ColorFormatter(logging.Formatter):
 
 
 if __name__ == "__main__":
+    import os
+    # 端口可由环境变量覆盖，供 run_headless.py 以计划任务方式启动时指定
+    _port = int(os.environ.get("SC_PORT", "8000"))
+    _host = os.environ.get("SC_HOST", "0.0.0.0")
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
-        port=8000,
+        host=_host,
+        port=_port,
         reload=False,
         log_level="info",
         access_log=True,

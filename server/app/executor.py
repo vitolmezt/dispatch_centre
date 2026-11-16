@@ -22,10 +22,9 @@ class Executor:
     def __init__(self, runner):
         self.runner = runner  # 回引用 Scheduler，用于上报状态
         self._procs: Dict[str, subprocess.Popen] = {}  # run_id -> Popen
+        self._jobs: Dict[str, int] = {}                # run_id -> 命名 Job 句柄
         self._user_stopped: set = set()
         self._lock = threading.Lock()
-        # 是否走独立 Task Host。单元测试可显式关闭，避免依赖外部宿主进程。
-        self._host_enabled = Executor.use_host()
 
     def mark_user_stopped(self, run_id: str):
         """记录该 run 是"用户主动停止/中止"，之后的读线程不得用退出码覆盖其状态."""
@@ -169,6 +168,97 @@ class Executor:
             "breakaway_allowed=%s -> 调度中心被强制结束时该任务可能被连带终止",
             envprobe.get("in_job"), envprobe.get("kill_on_close"),
             envprobe.get("breakaway_allowed"))
+
+
+    def _job_attach(self, run: Run, pid: int) -> bool:
+        """为运行实例建立命名 Job 并把进程收入。失败不影响任务本身。"""
+        if not Executor._is_windows():
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            k = ctypes.windll.kernel32
+            k.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+            k.CreateJobObjectW.restype = wintypes.HANDLE
+            k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                  wintypes.LPVOID, wintypes.DWORD]
+            k.SetInformationJobObject.restype = wintypes.BOOL
+            k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            k.AssignProcessToJobObject.restype = wintypes.BOOL
+            k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k.OpenProcess.restype = wintypes.HANDLE
+
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in run.id)
+            name = f"Local\\SCRun_{safe}"
+            h = k.CreateJobObjectW(None, name)
+            if not h:
+                return False
+
+            class _B(ctypes.Structure):
+                _fields_ = [("a", ctypes.c_int64), ("b", ctypes.c_int64),
+                            ("LimitFlags", wintypes.DWORD),
+                            ("c", ctypes.c_size_t), ("d", ctypes.c_size_t),
+                            ("e", wintypes.DWORD), ("f", ctypes.c_size_t),
+                            ("g", wintypes.DWORD), ("h", wintypes.DWORD)]
+
+            class _I(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_ulonglong)] * 6
+
+            class _E(ctypes.Structure):
+                _fields_ = [("Basic", _B), ("Io", _I),
+                            ("p1", ctypes.c_size_t), ("p2", ctypes.c_size_t),
+                            ("p3", ctypes.c_size_t), ("p4", ctypes.c_size_t)]
+
+            info = _E()
+            info.Basic.LimitFlags = 0  # 关键：不启用 KILL_ON_JOB_CLOSE
+            k.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info))
+
+            hp = k.OpenProcess(0x1F0FFF, False, int(pid))
+            assigned = False
+            if hp:
+                try:
+                    assigned = bool(k.AssignProcessToJobObject(
+                        wintypes.HANDLE(h), wintypes.HANDLE(hp)))
+                finally:
+                    k.CloseHandle(hp)
+            with self._lock:
+                self._jobs[run.id] = int(h)
+            if not assigned:
+                self._job_close(run.id)
+            return assigned
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _job_terminate(self, run_id: str) -> bool:
+        """用 Job 句柄终止整组（仅存活期有效）。"""
+        if not Executor._is_windows():
+            return False
+        with self._lock:
+            h = self._jobs.get(run_id)
+        if not h:
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.windll.kernel32
+            k.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            k.TerminateJobObject.restype = wintypes.BOOL
+            return bool(k.TerminateJobObject(wintypes.HANDLE(h), 1))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _job_close(self, run_id: str):
+        """释放 Job 句柄。释放后 Job 若已无其他句柄引用即被销毁。"""
+        with self._lock:
+            h = self._jobs.pop(run_id, None)
+        if not h:
+            return
+        try:
+            import ctypes
+            ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(h))
+        except Exception:  # noqa: BLE001
+            pass
 
     @staticmethod
     def _is_windows() -> bool:
@@ -324,127 +414,7 @@ class Executor:
 
     def run(self, run: Run, job: Job):
         """启动子进程（或执行文件操作），更新 run 状态。在独立线程中调用."""
-        if job.type != "FILEOP" and self._host_enabled:
-            return self._run_via_host(run, job)
         return self._run_local(run, job)
-
-    @staticmethod
-    def use_host() -> bool:
-        """是否启用独立 Task Host 执行任务。
-
-        默认启用；设置 SC_USE_TASK_HOST=0 可回退到进程内 Popen 方式（便于排障/对照）。
-        """
-        v = os.environ.get("SC_USE_TASK_HOST", "1").strip().lower()
-        return v not in ("0", "false", "no", "off")
-
-    def _run_via_host(self, run: Run, job: Job):
-        """通过独立 Task Host 启动并托管任务。"""
-        from . import host_launcher as HL
-
-        argv = self._build_argv(job)
-        log_path = self._resolve_log_path(run)
-        env = dict(job.params.get("env") or {})
-        cwd = job.params.get("workdir") or None
-
-        # 与进程内路径保持一致：先记录开始时间，否则 UI 的「开始/耗时」为空
-        run.status = "RUNNING"
-        run.start = _now_local()
-        run.pid = None
-        run.error = ""
-
-        try:
-            HL.ensure_host()
-            resp = HL.request("POST", "/start", {
-                "run_id": run.id,
-                "argv": argv,
-                "log_path": log_path,
-                "env": env,
-                "cwd": cwd,
-            }, timeout=30)
-        except Exception as e:  # noqa: BLE001
-            run.status = "FAILED"
-            run.error = f"Task Host 不可用: {e}"
-            self.runner.on_finished(run)
-            return
-
-        if not resp.get("ok"):
-            run.status = "FAILED"
-            run.error = f"Task Host 启动失败: {resp.get('error') or resp}"
-            self.runner.on_finished(run)
-            return
-
-        run.pid = resp.get("pid")
-        run.detached = bool(job.params.get("detach", False))
-        run.via_shell = bool(resp.get("via_shell"))
-        run.process_create_time = resp.get("process_create_time")
-        run.executable_path = resp.get("executable_path") or (
-            str(argv[0]) if argv else None)
-        run.log_path = resp.get("log_path") or log_path
-        run.process_group_id = run.pid
-        # 由 Task Host 托管，Job 隔离由宿主保证，不再有隔离告警
-        run.isolation_warning = ""
-
-        if not run.process_create_time:
-            run.status = "INTERRUPTED"
-            run.error = "Task Host 未返回进程身份凭据，拒绝托管"
-            self.runner.on_finished(run)
-            return
-
-        self.runner.on_started(run)
-
-        # 本地只做日志跟随与状态收尾；进程本身由 Task Host 管理
-        self._tail_via_host(run, log_path, HL)
-
-    def _tail_via_host(self, run: Run, log_path: str, HL):
-        """跟随日志并轮询 Task Host 状态，直到任务结束或被停止。"""
-        pos = int(getattr(run, "log_offset", 0) or 0)
-        try:
-            if os.path.isfile(log_path) and os.path.getsize(log_path) < pos:
-                pos = 0
-        except OSError:
-            pos = 0
-
-        while True:
-            if run.id in self._user_stopped:
-                break
-            pos = self._pump_log(run, log_path, pos)
-            try:
-                st = HL.request("GET", f"/status?run_id={run.id}", timeout=10)
-            except Exception:  # noqa: BLE001
-                # Host 暂时不可达：不判定任务死亡，稍后重试
-                time.sleep(1.0)
-                continue
-            if st.get("error") == "run_not_found":
-                break
-            if not st.get("alive"):
-                self._pump_log(run, log_path, pos)
-                rc = st.get("exit_code")
-                run.exit_code = rc if isinstance(rc, int) else None
-                if run.id in self._user_stopped:
-                    break
-                if run.status in ("KILLED", "TIMEDOUT"):
-                    break
-                if run.exit_code == 0:
-                    run.status = "SUCCEEDED"
-                    run.error = ""
-                else:
-                    run.status = "INTERRUPTED"
-                    if run.exit_code is None:
-                        run.interrupted_reason = (
-                            "任务已结束但无可靠退出码凭证，标记为中断")
-                        run.error = "退出码未知（无可靠凭证）"
-                    else:
-                        run.interrupted_reason = (
-                            f"进程非 0 退出（exit={run.exit_code}），已判定为异常退出")
-                        run.error = f"退出码 {run.exit_code}（异常退出）"
-                break
-            time.sleep(1.0)
-
-        run.end = _now_local()
-        if run.id in self._user_stopped:
-            self.runner.on_user_stopped(run)
-        else:
-            self.runner.on_finished(run)
 
     def _run_local(self, run: Run, job: Job):
         """原有的进程内执行方式（FILEOP 或禁用 Host 时使用）。"""
@@ -486,8 +456,14 @@ class Executor:
                     run.isolation_warning = (
                         "调度中心自身运行在带 KILL_ON_JOB_CLOSE 的 Job 中且不允许 "
                         "breakaway，任务进程无法获得 Job 级隔离：调度中心被强制结束时"
-                        "该任务可能被连带终止。建议改用非 Job 约束方式启动调度中心。")
+                        "该任务可能被连带终止。建议改用 run_headless.py 启动调度中心。")
                     self._warn_isolation(envprobe)
+
+            # 为该运行实例建立命名 Job（不设 KILL_ON_JOB_CLOSE）：
+            # 仅在调度中心存活期间用于精确终止整个进程组。
+            # 调度中心退出时该 Job 句柄随之关闭、Job 销毁，但任务进程不受影响，
+            # 因此任务不依赖调度中心存活（命名 Job 无法跨进程重开，实测确认）。
+            self._job_attach(run, proc.pid)
 
             run.detached = detach
             run.via_shell = bool(
@@ -623,26 +599,11 @@ class Executor:
             proc = self._procs.get(run.id)
         if proc is not None:
             self._user_stopped.add(run.id)
-            self._kill_proc(proc)
+            if not self._job_terminate(run.id):
+                self._kill_proc(proc)
             run.status = "KILLED"
             run.error = "用户中止"
             return True
-
-        # Host 托管的任务没有本地 Popen 句柄，改为请求 Task Host 停止
-        if self._host_enabled:
-            from . import host_launcher as HL
-            self._user_stopped.add(run.id)
-            try:
-                resp = HL.request("POST", "/stop", {"run_id": run.id}, timeout=30)
-            except Exception as e:  # noqa: BLE001
-                run.error = f"停止失败（Task Host 不可达）: {e}"
-                return False
-            if resp.get("stop"):
-                run.status = "KILLED"
-                run.error = "用户中止"
-                return True
-            run.error = resp.get("reason") or "停止失败"
-            return False
         return False
 
     def _on_timeout(self, proc: subprocess.Popen, run: Run):
