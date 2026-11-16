@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, ref, watch } from 'vue'
 import { fetchRunning, abortRun, fetchJobs } from '../api'
-import { statusLabel, jobTypeLabel, triggerLabel, dict } from '../constants'
+import { statusLabel, statusTip, jobTypeLabel, triggerLabel, dict } from '../constants'
 import { refreshTick, bump } from '../store/refresh'
 import { openRun, openJob } from '../store/drawer'
 import { toast } from '../store/toast'
@@ -192,7 +192,8 @@ function statusClass(status) { return STATUS_CLASS[status] || 'NEUTRAL' }
         </el-table-column>
         <el-table-column label="状态" min-width="100" align="center">
           <template #default="{ row }">
-            <span class="badge" :class="statusClass(row.status)">{{ statusLabel(row.status) }}</span>
+            <span class="badge" :class="statusClass(row.status)"
+                  :title="statusTip(row.status, row.interrupted_reason || row.error)">{{ statusLabel(row.status) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" fixed="right" width="150" align="center">

@@ -2,7 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { fetchHistory, deleteHistory } from '../api'
-import { statusLabel, jobTypeLabel, triggerLabel, dict } from '../constants'
+import { statusLabel, statusTip, jobTypeLabel, triggerLabel, dict } from '../constants'
 import { refreshTick } from '../store/refresh'
 import { openRun } from '../store/drawer'
 import { toast } from '../store/toast'
@@ -130,7 +130,7 @@ async function onBatchDelete() {
         <el-table-column label="状态" min-width="100" align="center">
           <template #default="{ row }">
             <span :class="['badge', row.status]"
-                  :title="statusLabel(row.status) + (row.error ? ' · ' + row.error : '')">
+                  :title="statusTip(row.status, row.error)">
               {{ statusLabel(row.status) }}
             </span>
           </template>

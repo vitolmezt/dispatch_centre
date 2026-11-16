@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { jobTypeLabel, statusLabel, cronToHuman } from '../constants'
+import { jobTypeLabel, statusLabel, statusTip, cronToHuman } from '../constants'
 import { fetchHistory } from '../api'
 
 
@@ -110,7 +110,8 @@ watch(() => props.id, (v) => { if (v) loadHistory() })
           <h4 class="fn-sec">执行经历</h4>
           <div v-if="recentRuns.length" class="runs">
             <div v-for="r in recentRuns" :key="r.id" class="run-row">
-              <span :class="['badge', r.status]">{{ statusLabel(r.status) }}</span>
+              <span :class="['badge', r.status]"
+                    :title="statusTip(r.status, r.interrupted_reason || r.error)">{{ statusLabel(r.status) }}</span>
               <span class="muted mono">{{ r.start ? r.start.slice(5, 19) : '—' }}</span>
               <span class="mono">{{ r.duration_ms != null ? (r.duration_ms / 1000).toFixed(2) + 's' : '—' }}</span>
             </div>

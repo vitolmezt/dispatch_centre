@@ -6,8 +6,8 @@ STATUS = {
     "SUCCEEDED": "已完成",
     "FAILED": "失败",
     "TIMEDOUT": "已超时",
-    "KILLED": "已中止",
-    "INTERRUPTED": "已中断",
+    "KILLED": "用户中止",
+    "INTERRUPTED": "进程中断",
     "ORPHANED": "孤儿",
     "UNKNOWN": "待核查",
 }

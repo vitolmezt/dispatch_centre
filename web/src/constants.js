@@ -23,6 +23,25 @@ export function t(group, key, fallback = '') {
 export function statusLabel(key) {
   return t('STATUS', key, key)
 }
+
+// 「用户中止 / 进程中断」语义相近，文案已点明谁发起的，title 再补判定依据
+const STATUS_HINT = {
+  KILLED: '用户主动终止，由调度中心按指令中止',
+  INTERRUPTED: '非主动终止：进程被外部结束或异常退出（含重启/心跳核验确认已死）',
+  TIMEDOUT: '超过 timeout_s，由调度中心中止',
+  FAILED: '引擎自身异常，进程未真正启动（无退出码）',
+}
+
+export function statusTip(key, detail = '') {
+  const label = statusLabel(key)
+  const parts = [label]
+  if (STATUS_HINT[key]) parts.push(STATUS_HINT[key])
+  // detail 常与标签重复（如 error 就是「用户中止」），去重后再拼
+  const d = String(detail || '').trim()
+  if (d && !parts.includes(d)) parts.push(d)
+  return parts.join(' · ')
+}
+
 export function jobTypeLabel(key) {
   return t('JOB_TYPE', key, key)
 }

@@ -13,16 +13,16 @@ const loading = ref(false)
 const unloadMsg = ref('')
 
 const stats = ref({
-  total: 0, running: 0, timedout: 0, killed: 0, success: 0, failed: 0, avgMs: 0,
-  statusMap: {}, jobCount: {}, jobStatus: {}, dayOk: {}, dayAll: {},
+  total: 0, running: 0, timedout: 0, killed: 0, interrupted: 0, success: 0, failed: 0, avgMs: 0,
+  statusMap: {}, jobCount: {}, jobStatus: {}, dayOk: {}, dayAll: {}, dayKilled: {}, dayInterrupted: {},
 })
 
 function aggregate(runs) {
-  const s = { total: 0, running: 0, timedout: 0, killed: 0, success: 0, failed: 0, avgMs: 0, sumMs: 0, nDur: 0 }
+  const s = { total: 0, running: 0, timedout: 0, killed: 0, interrupted: 0, success: 0, failed: 0, avgMs: 0, sumMs: 0, nDur: 0 }
   const statusMap = {}
   const jobCount = {}
   const jobStatus = {}
-  const dayOk = {}, dayAll = {}
+  const dayOk = {}, dayAll = {}, dayKilled = {}, dayInterrupted = {}
 
   for (const r of runs) {
     s.total++
@@ -32,18 +32,22 @@ function aggregate(runs) {
     else if (st === 'FAILED') s.failed++
     else if (st === 'TIMEDOUT') s.timedout++
     else if (st === 'KILLED') s.killed++
+    else if (st === 'INTERRUPTED') s.interrupted++
     else if (st === 'RUNNING') s.running++
 
     jobCount[r.job_name] = (jobCount[r.job_name] || 0) + 1
     jobStatus[r.job_name] = jobStatus[r.job_name] || { ok: 0, fail: 0 }
     if (st === 'SUCCEEDED') jobStatus[r.job_name].ok++
-    else if (st !== 'RUNNING') jobStatus[r.job_name].fail++
+    // 用户中止属预期内操作，不计入健康度扣分
+    else if (st !== 'RUNNING' && st !== 'KILLED') jobStatus[r.job_name].fail++
 
     if (r.duration_ms != null) { s.sumMs += r.duration_ms; s.nDur++ }
     if (r.start) {
       const d = r.start.slice(0, 10)
       dayAll[d] = (dayAll[d] || 0) + 1
       if (st === 'SUCCEEDED') dayOk[d] = (dayOk[d] || 0) + 1
+      if (st === 'KILLED') dayKilled[d] = (dayKilled[d] || 0) + 1
+      if (st === 'INTERRUPTED') dayInterrupted[d] = (dayInterrupted[d] || 0) + 1
     }
   }
   if (s.nDur) s.avgMs = Math.round(s.sumMs / s.nDur)
@@ -52,6 +56,8 @@ function aggregate(runs) {
   s.jobStatus = jobStatus
   s.dayOk = dayOk
   s.dayAll = dayAll
+  s.dayKilled = dayKilled
+  s.dayInterrupted = dayInterrupted
   return s
 }
 
@@ -87,14 +93,15 @@ const kpis = computed(() => {
     { label: '总执行次数', value: total.toLocaleString(), delta: periodDelta(r => r.length) || '—', note: '较上一周期', tone: 'blue', icon: '↗' },
     { label: '任务成功率', value: succRate + '%', delta: periodRateDelta() || '—', note: '较上一周期', tone: 'green', icon: '✓' },
     { label: '正在运行', value: String(s.running).padStart(2, '0'), delta: '实时', note: '当前活跃任务', tone: 'violet', icon: '◉' },
-    { label: '失败 / 超时', value: String(s.failed + s.timedout + s.killed), delta: '—', note: '较上一周期', tone: 'red', icon: '!' },
+    { label: '失败 / 超时', value: String(s.failed + s.timedout + s.interrupted), delta: '—', note: '不含主动中止', tone: 'red', icon: '!' },
   ]
 })
 
 
 const STATUS_META = {
   SUCCEEDED: { name: '已完成', color: '#43C99A' },
-  KILLED: { name: '已中止', color: '#D69A4B' },
+  KILLED: { name: '用户中止', color: '#A855F7' },
+  INTERRUPTED: { name: '进程中断', color: '#0E9BB8' },
   TIMEDOUT: { name: '已超时', color: '#E7B84B' },
   FAILED: { name: '失败', color: '#EF6A70' },
   RUNNING: { name: '进行中', color: '#6C9CFF' },
@@ -144,14 +151,19 @@ function trendSeries() {
     const nowTs = now.getTime()
     const hourCount = {}
     const hourOk = {}
+    const hourKilled = {}
+    const hourInterrupted = {}
     let firstHour = -1
     for (const r of runs) {
       if (!r.start) continue
       const t = new Date(r.start).getTime()
       if (!isFinite(t) || t < todayStart || t > nowTs) continue
       const h = new Date(t).getHours()
+      const st = (r.status || 'UNKNOWN').toUpperCase()
       hourCount[h] = (hourCount[h] || 0) + 1
-      if ((r.status || 'UNKNOWN').toUpperCase() === 'SUCCEEDED') hourOk[h] = (hourOk[h] || 0) + 1
+      if (st === 'SUCCEEDED') hourOk[h] = (hourOk[h] || 0) + 1
+      else if (st === 'KILLED') hourKilled[h] = (hourKilled[h] || 0) + 1
+      else if (st === 'INTERRUPTED') hourInterrupted[h] = (hourInterrupted[h] || 0) + 1
       if (firstHour === -1 || h < firstHour) firstHour = h
     }
     if (firstHour === -1) firstHour = 0
@@ -159,24 +171,37 @@ function trendSeries() {
     const labels = []
     const success = []
     const failed = []
+    const killed = []
+    const interrupted = []
     for (let h = firstHour; h <= lastHour; h++) {
       const label = `${String(h).padStart(2, '0')}:00`
       labels.push(label)
-      success.push(hourOk[h] || 0)
-      failed.push((hourCount[h] || 0) - (hourOk[h] || 0))
+      const total = hourCount[h] || 0
+      const ok = hourOk[h] || 0
+      const k = hourKilled[h] || 0
+      const i = hourInterrupted[h] || 0
+      success.push(ok)
+      // 失败线只保留真异常，让中止/中断单独可见
+      failed.push(Math.max(0, total - ok - k - i))
+      killed.push(k)
+      interrupted.push(i)
     }
-    return { labels, success, failed }
+    return { labels, success, failed, killed, interrupted }
   }
 
   const ok = stats.value.dayOk || {}
   const all = stats.value.dayAll || {}
+  const dk = stats.value.dayKilled || {}
+  const di = stats.value.dayInterrupted || {}
   const days = ranges.find(r => r.label === activeRange.value)?.days || 7
   let dates = Object.keys(all).sort()
   if (days > 0) dates = dates.slice(-days)
   return {
     labels: dates.map(d => d.slice(5).replace('-', '/')),
     success: dates.map(d => ok[d] || 0),
-    failed: dates.map(d => (all[d] || 0) - (ok[d] || 0)),
+    failed: dates.map(d => Math.max(0, (all[d] || 0) - (ok[d] || 0) - (dk[d] || 0) - (di[d] || 0))),
+    killed: dates.map(d => dk[d] || 0),
+    interrupted: dates.map(d => di[d] || 0),
   }
 }
 
@@ -243,13 +268,15 @@ function makeCharts() {
   charts[0]?.setOption({
     animationDuration: 700,
     tooltip: { trigger: 'axis', backgroundColor: th.tooltip.backgroundColor, borderColor: th.tooltip.borderColor, textStyle: { color: th.tooltip.textStyle.color } },
-    legend: { top: 0, right: 0, icon: 'circle', itemWidth: 9, itemHeight: 9, textStyle: { color: th.axisLabelColor, fontSize: 11 }, data: [{ name: '成功', itemStyle: { color: chartStateColor('ok') } }, { name: '失败', itemStyle: { color: chartStateColor('fail') } }] },
+    legend: { top: 0, right: 0, icon: 'circle', itemWidth: 9, itemHeight: 9, itemSpacing: 8, textStyle: { color: th.axisLabelColor, fontSize: 11 }, data: [{ name: '成功', itemStyle: { color: chartStateColor('ok') } }, { name: '失败', itemStyle: { color: chartStateColor('fail') } }, { name: '用户中止', itemStyle: { color: '#A855F7' } }, { name: '进程中断', itemStyle: { color: '#0E9BB8' } }] },
     grid: { left: 8, right: 12, top: 32, bottom: 8, containLabel: true },
     xAxis: { type: 'category', boundaryGap: false, data: trend.labels, axisLabel: { color: th.axisLabelColor, fontSize: 11 }, axisLine: { lineStyle: { color: th.gridLineColor } }, axisTick: { show: false } },
     yAxis: { type: 'value', axisLabel: { color: th.axisLabelColor, fontSize: 11 }, splitLine: { lineStyle: { color: th.gridLineColor, type: 'dashed' } }, axisLine: { show: false } },
     series: [
       { name: '成功', type: 'line', smooth: .38, symbol: 'none', data: trend.success, itemStyle: { color: chartStateColor('ok') }, lineStyle: { width: 2.5, color: chartStateColor('ok') }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: isDark ? 'rgba(67,201,154,.20)' : 'rgba(22,163,74,.14)' }, { offset: 1, color: 'rgba(67,201,154,0)' }]) } },
       { name: '失败', type: 'line', smooth: .38, symbol: 'none', data: trend.failed, itemStyle: { color: chartStateColor('fail') }, lineStyle: { width: 2, color: chartStateColor('fail') } },
+      { name: '用户中止', type: 'line', smooth: .38, symbol: 'none', data: trend.killed, itemStyle: { color: '#A855F7' }, lineStyle: { width: 2, color: '#A855F7' } },
+      { name: '进程中断', type: 'line', smooth: .38, symbol: 'none', data: trend.interrupted, itemStyle: { color: '#0E9BB8' }, lineStyle: { width: 2, color: '#0E9BB8' } },
     ],
   })
 
@@ -344,6 +371,8 @@ onBeforeUnmount(() => {
         <div class="chart-foot">
           <span><i class="legend-dot success"></i>成功执行</span>
           <span><i class="legend-dot failed"></i>失败执行</span>
+          <span><i class="legend-dot killed"></i>用户中止</span>
+          <span><i class="legend-dot interrupted"></i>进程中断</span>
           <span class="foot-note">数据随任务事件实时更新</span>
         </div>
       </article>
@@ -423,6 +452,8 @@ onBeforeUnmount(() => {
 .legend-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
 .legend-dot.success { background: #43c99a; }
 .legend-dot.failed { background: #ef6a70; }
+.legend-dot.killed { background: #a855f7; }
+.legend-dot.interrupted { background: #0e9bb8; }
 .foot-note { margin-left: auto; color: var(--text-muted); }
 .status-content { display: flex; align-items: center; gap: 5px; padding: 7px 17px 0; }
 .status-chart { width: 46%; height: 190px; min-width: 145px; }

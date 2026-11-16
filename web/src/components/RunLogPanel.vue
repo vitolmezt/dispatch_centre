@@ -52,7 +52,8 @@ async function onStart() { busy.value = true; try { await emit('start', props.me
 async function onStop() { busy.value = true; try { await emit('stop', props.member) } finally { busy.value = false } }
 
 const STATE_LABELS = {
-  SUCCEEDED: '已完成', KILLED: '已中止', TIMEDOUT: '已超时',
+  SUCCEEDED: '已完成', KILLED: '用户中止', TIMEDOUT: '已超时',
+  INTERRUPTED: '进程中断',
   FAILED: '执行失败', RUNNING: '运行中', PENDING: '待启动',
   STOPPED: '已停止',
 }

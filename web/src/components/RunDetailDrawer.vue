@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import { fetchRun, streamRunLog } from '../api'
-import { statusLabel, jobTypeLabel, triggerLabel } from '../constants'
+import { statusLabel, statusTip, jobTypeLabel, triggerLabel } from '../constants'
 import { refreshTick } from '../store/refresh'
 
 
@@ -134,7 +134,8 @@ onBeforeUnmount(() => {
         <div class="d-head">
           <div class="d-title">
             <span class="d-name">{{ run?.job_name || '执行详情' }}</span>
-            <span v-if="run" :class="['badge', run.status]">{{ statusLabel(run.status) }}</span>
+            <span v-if="run" :class="['badge', run.status]"
+                  :title="statusTip(run.status, run.interrupted_reason || run.error)">{{ statusLabel(run.status) }}</span>
           </div>
         </div>
       </template>

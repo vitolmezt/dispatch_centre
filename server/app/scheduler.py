@@ -598,7 +598,7 @@ class Scheduler:
             run = self.running.get(run_id)
         if run is None:
             # 重启恢复/孤儿实例没有 Popen 句柄，回落到按 pid 身份核验的停止逻辑，
-            # 否则会出现「标记为已中止但进程其实还活着」的假成功。
+            # 否则会出现「已标记用户中止但进程其实还活着」的假成功。
             res = self.stop(run_id)
             return bool(res.get("ok") and res.get("stop"))
         self.executor.abort(run)

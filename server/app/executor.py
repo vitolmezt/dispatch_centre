@@ -608,7 +608,7 @@ class Executor:
 
     def _on_timeout(self, proc: subprocess.Popen, run: Run):
         run.status = "TIMEDOUT"
-        run.error = f"执行超过 {run.timeout_s} 秒，已中止"
+        run.error = f"执行超过 {run.timeout_s} 秒，已由调度中心终止"
         self._kill_proc(proc)
 
     def _verify_exit_was_external(self, run: Run):

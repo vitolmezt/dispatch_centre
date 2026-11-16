@@ -224,7 +224,11 @@ a { color: var(--primary); text-decoration: none; }
 .badge.SUCCEEDED { background: rgba(53, 196, 109, .16); color: #21a757; }
 .badge.FAILED    { background: rgba(229, 72, 77, .16);  color: #dc3740; }
 .badge.TIMEDOUT  { background: rgba(255, 163, 77, .16); color: #ef8f2b; }
-.badge.KILLED    { background: rgba(196, 102, 153, .16); color: #b05aa0; }
+.badge.KILLED    { background: rgba(168, 85, 247, .16); color: #9333ea; }
+.badge.INTERRUPTED { background: rgba(14, 155, 184, .16); color: #0e7490; }
+.badge.ORPHANED  { background: rgba(146, 118, 214, .16); color: #7f63c9; }
+.badge.UNKNOWN   { background: rgba(150, 150, 158, .16); color: #7f7f88; }
+.badge.STARTING  { background: rgba(111, 177, 255, .12); color: #5b93d6; }
 .badge.NEUTRAL   { background: var(--bg-panel-2); color: var(--text-muted); }
 .badge.IDLE      { background: var(--bg-panel-2); color: var(--text-muted); }
 

@@ -82,8 +82,9 @@ function handleRunEvent(d) {
     const name = d.job_name || ''
     const st = d.status
     if (st === 'SUCCEEDED') toast.success(`执行完成「${name}」`)
-    else if (st === 'KILLED') toast.info(`已中止「${name}」`)
+    else if (st === 'KILLED') toast.info(`用户中止「${name}」`)
     else if (st === 'TIMEDOUT') toast.error(`执行超时「${name}」`)
+    else if (st === 'INTERRUPTED') toast.error(`进程中断「${name}」`)
     else toast.error(`执行失败「${name}」`)
   }
 }
