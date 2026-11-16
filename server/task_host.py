@@ -138,6 +138,179 @@ def taskkill_tree(pid: int) -> bool:
         return False
 
 
+# ---------------- 命名 Job Object 管理 ----------------
+#
+# 设计要点（对应「三级独立生命周期」）：
+#   - 每个任务放进一个命名 Job，但【不设置 KILL_ON_JOB_CLOSE】。
+#     因此 Job 的最后一个句柄关闭时，里面的进程不会被终止 ——
+#     Task Host 崩溃后任务照常运行。
+#   - Job 句柄只在 Task Host 存活期间持有，用于精确终止整个进程组。
+#   - Job 是内核对象，最后一个句柄关闭即销毁，名字随之消失
+#     （实测 OpenJobObject 在 Host 退出后返回 ERROR_FILE_NOT_FOUND）。
+#     所以 Host 重启后【不能】靠重开 Job 恢复，改用持久化记录 +
+#     pid/create_time 身份核验 + taskkill /T 进程树停止。
+#     这一点已实测确认，详见交付说明。
+
+_job_handles: Dict[str, int] = {}
+
+
+def _job_name(run_id: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in run_id)
+    return f"Local\\SCTaskJob_{safe}"
+
+
+def _create_job(run_id: str) -> Optional[int]:
+    """为任务创建命名 Job（不含 KILL_ON_JOB_CLOSE 策略）。"""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.windll.kernel32
+        k.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        k.CreateJobObjectW.restype = wintypes.HANDLE
+        k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                              wintypes.LPVOID, wintypes.DWORD]
+        k.SetInformationJobObject.restype = wintypes.BOOL
+
+        h = k.CreateJobObjectW(None, _job_name(run_id))
+        if not h:
+            return None
+
+        # 显式声明 LimitFlags = 0：不启用 KILL_ON_JOB_CLOSE，
+        # 保证 Host 退出后任务不被连带终止。
+        class _BASIC(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_int64), ("b", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("c", ctypes.c_size_t), ("d", ctypes.c_size_t),
+                        ("e", wintypes.DWORD), ("f", ctypes.c_size_t),
+                        ("g", wintypes.DWORD), ("h", wintypes.DWORD)]
+
+        class _IO(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_ulonglong)] * 6
+
+        class _EXT(ctypes.Structure):
+            _fields_ = [("Basic", _BASIC), ("Io", _IO),
+                        ("p1", ctypes.c_size_t), ("p2", ctypes.c_size_t),
+                        ("p3", ctypes.c_size_t), ("p4", ctypes.c_size_t)]
+
+        info = _EXT()
+        info.Basic.LimitFlags = 0  # 关键：不设 KILL_ON_JOB_CLOSE
+        k.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info))
+        return int(h)
+    except Exception:
+        return None
+
+
+def _assign_to_job(hjob: int, pid: int) -> bool:
+    if not IS_WINDOWS or not hjob:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.windll.kernel32
+        k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k.AssignProcessToJobObject.restype = wintypes.BOOL
+
+        hp = k.OpenProcess(0x1F0FFF, False, int(pid))
+        if not hp:
+            return False
+        try:
+            return bool(k.AssignProcessToJobObject(wintypes.HANDLE(hjob),
+                                                   wintypes.HANDLE(hp)))
+        finally:
+            k.CloseHandle(hp)
+    except Exception:
+        return False
+
+
+def _terminate_job(hjob: int) -> bool:
+    """通过 Job 句柄终止整个进程组（Host 存活期间可用）。"""
+    if not IS_WINDOWS or not hjob:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.windll.kernel32
+        k.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        k.TerminateJobObject.restype = wintypes.BOOL
+        return bool(k.TerminateJobObject(wintypes.HANDLE(hjob), 1))
+    except Exception:
+        return False
+
+
+def _close_job(run_id: str):
+    h = _job_handles.pop(run_id, None)
+    if h and IS_WINDOWS:
+        try:
+            import ctypes
+            ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(h))
+        except Exception:
+            pass
+
+
+# ---------------- 宿主自身 Job 环境自检 ----------------
+
+def self_job_check() -> Dict[str, Optional[bool]]:
+    """检查 Task Host 自身是否处于带 KILL_ON_JOB_CLOSE 的外部 Job 中。
+
+    若处于，说明宿主可能被外部连带终止（例如被 IDE 终端拉起），
+    应在日志中告警，提示改用计划任务启动。
+    """
+    out = {"in_job": None, "kill_on_close": None}
+    if not IS_WINDOWS:
+        out.update(in_job=False, kill_on_close=False)
+        return out
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.windll.kernel32
+        k.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE,
+                                     ctypes.POINTER(wintypes.BOOL)]
+        k.IsProcessInJob.restype = wintypes.BOOL
+        k.GetCurrentProcess.restype = wintypes.HANDLE
+        k.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+            wintypes.DWORD, wintypes.LPVOID]
+        k.QueryInformationJobObject.restype = wintypes.BOOL
+
+        inj = wintypes.BOOL()
+        k.IsProcessInJob(k.GetCurrentProcess(), None, ctypes.byref(inj))
+        out["in_job"] = bool(inj.value)
+        if not inj.value:
+            out["kill_on_close"] = False
+            return out
+
+        class _BASIC(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_int64), ("b", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("c", ctypes.c_size_t), ("d", ctypes.c_size_t),
+                        ("e", wintypes.DWORD), ("f", ctypes.c_size_t),
+                        ("g", wintypes.DWORD), ("h", wintypes.DWORD)]
+
+        class _IO(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_ulonglong)] * 6
+
+        class _EXT(ctypes.Structure):
+            _fields_ = [("Basic", _BASIC), ("Io", _IO),
+                        ("p1", ctypes.c_size_t), ("p2", ctypes.c_size_t),
+                        ("p3", ctypes.c_size_t), ("p4", ctypes.c_size_t)]
+
+        info = _EXT()
+        if k.QueryInformationJobObject(None, 9, ctypes.byref(info),
+                                       ctypes.sizeof(info), None):
+            out["kill_on_close"] = bool(info.Basic.LimitFlags & 0x00002000)
+        return out
+    except Exception:
+        return out
+
+
 # ---------------- 状态持久化 ----------------
 
 def _save_state():
@@ -241,6 +414,20 @@ def start_task(req: dict) -> dict:
             pass
         raise RuntimeError("无法采集进程创建时刻，拒绝托管")
 
+    # 收进命名 Job（不含 KILL_ON_JOB_CLOSE）：
+    # Host 存活期间可用 Job 精确终止整组；Host 崩溃时 Job 随句柄销毁，
+    # 但任务进程不受影响，可继续运行。
+    hjob = _create_job(run_id)
+    job_assigned = False
+    if hjob:
+        job_assigned = _assign_to_job(hjob, proc.pid)
+        if job_assigned:
+            _job_handles[run_id] = hjob
+        else:
+            _close_job(run_id)
+    else:
+        hjob = None
+
     via_shell = bool(argv and Path(str(argv[0])).name.lower() in (
         "cmd.exe", "cmd", "sh", "/bin/sh", "bash", "/bin/bash"))
 
@@ -263,6 +450,7 @@ def start_task(req: dict) -> dict:
         _instances[run_id] = inst
         _procs[run_id] = proc
     _save_state()
+    _log(f"start run={run_id} pid={proc.pid} job={'yes' if job_assigned else 'no'}")
 
     t = threading.Thread(target=_watch, args=(run_id, proc), daemon=True,
                          name=f"watch-{run_id}")
@@ -270,7 +458,7 @@ def start_task(req: dict) -> dict:
 
     return {"ok": True, "pid": proc.pid,
             "process_create_time": ct, "via_shell": via_shell,
-            "log_path": log_path}
+            "log_path": log_path, "job_managed": job_assigned}
 
 
 def _watch(run_id: str, proc: subprocess.Popen):
@@ -287,6 +475,77 @@ def _watch(run_id: str, proc: subprocess.Popen):
             inst["ended_at"] = _now()
         _procs.pop(run_id, None)
     _save_state()
+    # 进程已结束，Job 里没有成员了，释放句柄
+    _close_job(run_id)
+
+
+def resume_monitoring() -> dict:
+    """Host 启动时重连既有任务。
+
+    Task Host 崩溃时它的 Job 句柄随之关闭、Job 被销毁（实测确认无法重开），
+    但任务进程本身继续运行。因此这里不依赖 Job，而是：
+      1. 读持久化记录
+      2. 用 pid + process_create_time 核验进程是否仍是原来那个
+      3. 仍在运行的：标记 RUNNING 并重建监控（轮询探活）
+      4. 已消失的：标记 EXITED，退出码不可知则保持 None（不伪造）
+    停止能力退化为按进程树（taskkill /T）。
+    """
+    out = {"resumed": [], "closed": [], "checked": 0}
+    with _lock:
+        items = [(k, dict(v)) for k, v in _instances.items()]
+    for run_id, inst in items:
+        out["checked"] += 1
+        pid = inst.get("pid")
+        ct = inst.get("process_create_time")
+        if not pid:
+            continue
+        if pid_alive(pid, ct):
+            # 仍在运行：重建监控
+            with _lock:
+                cur = _instances.get(run_id)
+                if cur is not None:
+                    cur["status"] = "RUNNING"
+                    cur["resumed_by"] = os.getpid()
+                    cur["resumed_at"] = _now()
+            out["resumed"].append(run_id)
+            # 启动轻量探活线程：无法拿到退出码，只能感知消失
+            t = threading.Thread(target=_resume_watch, args=(run_id, pid, ct),
+                                 daemon=True, name=f"resume-{run_id}")
+            t.start()
+        else:
+            with _lock:
+                cur = _instances.get(run_id)
+                if cur is not None and cur.get("status") == "RUNNING":
+                    cur["status"] = "EXITED"
+                    cur["ended_at"] = cur.get("ended_at") or _now()
+                    # 退出码不可知，保持原值（通常为 None），不伪造
+            out["closed"].append(run_id)
+    _save_state()
+    if out["resumed"] or out["closed"]:
+        _log(f"resume: checked={out['checked']} resumed={len(out['resumed'])} "
+             f"closed={len(out['closed'])}")
+    return out
+
+
+def _resume_watch(run_id: str, pid: int, ct: Optional[str]):
+    """重连后的探活线程：进程消失则标记结束（退出码不可知）。"""
+    while True:
+        time.sleep(2)
+        with _lock:
+            cur = _instances.get(run_id)
+            if cur is None or cur.get("status") != "RUNNING":
+                return
+        if not pid_alive(pid, ct):
+            with _lock:
+                cur = _instances.get(run_id)
+                if cur is not None:
+                    cur["status"] = "EXITED"
+                    cur["ended_at"] = cur.get("ended_at") or _now()
+                    cur["exit_code"] = None  # 无可靠凭证，不伪造
+                    cur["exit_known"] = False
+            _save_state()
+            _log(f"resume-watch run={run_id} pid={pid} 已结束（退出码不可知）")
+            return
 
 
 def get_status(run_id: str) -> Optional[dict]:
@@ -338,7 +597,15 @@ def stop_task(run_id: str) -> dict:
         return {"ok": True, "stop": True, "pid": pid,
                 "reason": "already_stopped"}
 
-    ok = taskkill_tree(pid)
+    # 优先用 Job 精确终止整个进程组（仅 Host 存活期间持有句柄时可用）；
+    # Host 重启后重连的任务没有 Job 句柄，回退到按进程树终止。
+    used_job = False
+    hjob = _job_handles.get(run_id)
+    if hjob:
+        used_job = _terminate_job(hjob)
+    if not used_job:
+        taskkill_tree(pid)
+
     # 等待确认
     for _ in range(30):
         if not pid_alive(pid, inst.get("process_create_time")):
@@ -351,10 +618,13 @@ def stop_task(run_id: str) -> dict:
         if cur is not None:
             cur["status"] = "KILLED"
             cur["ended_at"] = _now()
+            cur["stop_via"] = "job" if used_job else "tree"
     _save_state()
+    _close_job(run_id)
 
     return {"ok": gone, "stop": gone, "pid": pid,
-            "reason": "killed" if gone else "kill_failed"}
+            "reason": "killed" if gone else "kill_failed",
+            "stop_via": "job" if used_job else "tree"}
 
 
 # ---------------- HTTP 服务 ----------------
@@ -407,6 +677,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "host_pid": os.getpid()})
             if u.path == "/running":
                 return self._json(200, {"items": list_running()})
+            if u.path == "/selfcheck":
+                return self._json(200, self_job_check())
             if u.path == "/status":
                 rid = (q.get("run_id") or [""])[0]
                 st = get_status(rid)
@@ -426,6 +698,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, start_task(self._body()))
             if u.path == "/stop":
                 return self._json(200, stop_task(self._body().get("run_id", "")))
+            if u.path == "/resume":
+                return self._json(200, resume_monitoring())
             return self._json(404, {"error": "not_found"})
         except ValueError as e:
             return self._json(400, {"error": str(e)})
@@ -450,10 +724,24 @@ def main():
     _load_state()
     _token()  # 确保 token 文件存在
 
+    # 自身 Job 环境自检：若 Host 被某个带 KILL_ON_JOB_CLOSE 的外层 Job 拉起，
+    # 它可能被外部连带终止，需告警（正确做法是由计划任务启动）。
+    sjc = self_job_check()
+    _log(f"[task-host] job self-check in_job={sjc.get('in_job')} "
+         f"kill_on_job_close={sjc.get('kill_on_job_close')}")
+    if sjc.get("kill_on_job_close"):
+        _log("[task-host][WARN] 本宿主处于带 KILL_ON_JOB_CLOSE 的外部 Job 中，"
+             "可能被外部连带终止；建议由计划任务启动")
+
+    # 重连崩溃前仍在运行的任务（不依赖 Job，按 pid + 创建时刻核验）
+    res = resume_monitoring()
+    _log(f"[task-host] resume on start: {res}")
+
     # 把实际端口写出来，供 Scheduler 发现（也支持固定端口）
     (STATE_DIR / "host_endpoint.json").write_text(
         json.dumps({"host": host, "port": port, "pid": os.getpid(),
-                    "started_at": _now()}, ensure_ascii=False),
+                    "started_at": _now(),
+                    "job_self_check": sjc}, ensure_ascii=False),
         encoding="utf-8")
 
     srv = ThreadingHTTPServer((host, port), Handler)

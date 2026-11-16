@@ -341,6 +341,18 @@ class Store:
             return None
         return self._run_from_row(row)
 
+    def recent_runs(self, limit: int = 200) -> List[Run]:
+        """最近若干条 run（含终态），用于与 Task Host 做状态一致性核对。
+
+        场景：数据库某条记录已被标为终态（如 KILLED），但 Task Host 里
+        该任务其实还在运行（Host 崩溃重连后状态未回写）。
+        只查非终态会把这类不一致永久漏掉，所以要连终态一起核对。
+        """
+        sql = "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?"
+        with self._lock:
+            rows = self._conn.execute(sql, (int(limit),)).fetchall()
+        return [self._run_from_row(r) for r in rows]
+
     def running_runs(self) -> List[Run]:
         states = ("STARTING", "RUNNING", "ORPHANED", "UNKNOWN")
         if not states:

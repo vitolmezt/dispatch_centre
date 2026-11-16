@@ -389,6 +389,63 @@ class Scheduler:
             except Exception as e:  # noqa: BLE001
                 logger.error(f"恢复 run[{run.id}] 时异常: {e}")
 
+        # 一致性核对：数据库里已是终态、但 Task Host 说仍在运行的记录。
+        # 这类不一致不会进入上面的非终态候选，必须单独检查，否则会长期存在
+        # 「界面显示已结束、进程其实还在跑」的情况。
+        try:
+            self._reconcile_with_host()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"与 Task Host 状态核对失败: {e}")
+
+    def _reconcile_with_host(self):
+        """核对终态记录与 Task Host 的真实状态，修正不一致。"""
+        if not getattr(self.executor, "_host_enabled", False):
+            return
+        from . import host_launcher as HL
+        if not HL.host_alive():
+            return
+        try:
+            rl = HL.request("GET", "/running", timeout=15)
+        except Exception:  # noqa: BLE001
+            return
+        host_running = {i.get("run_id"): i for i in (rl.get("items") or [])}
+        if not host_running:
+            return
+
+        fixed = 0
+        for run in self.store.recent_runs(200):
+            if run.id not in host_running:
+                continue
+            if run.status in ("RUNNING", "STARTING", "ORPHANED", "UNKNOWN"):
+                continue  # 已是非终态，上面的恢复流程会处理
+            info = host_running[run.id]
+            prev = run.status
+            run.status = "RUNNING"
+            run.pid = info.get("pid") or run.pid
+            run.process_create_time = (info.get("process_create_time")
+                                       or run.process_create_time)
+            run.log_path = info.get("log_path") or run.log_path
+            run.end = None
+            run.exit_code = None
+            run.error = ""
+            run.interrupted_reason = (
+                f"状态不一致已修正：数据库原为 {prev}，"
+                f"Task Host 确认进程仍在运行（pid={run.pid}）")
+            run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
+            self.store.save_run(run)
+            self._publish_status_change(run)
+            with self._lock:
+                self.running[run.id] = run
+            t = threading.Thread(target=self._host_watch_loop, args=(run,),
+                                 name=f"host-watch-{run.id}", daemon=True)
+            t.start()
+            fixed += 1
+            logger.warning(
+                f"状态不一致已修正 run[{run.id}]: db={prev} -> RUNNING"
+                f"（Task Host 仍在托管 pid={run.pid}）")
+        if fixed:
+            logger.info(f"与 Task Host 核对完成：修正 {fixed} 条不一致记录")
+
     def _recover_via_host(self, run: Run) -> bool:
         """向 Task Host 查询该 run 的真实状态并接管。返回 True 表示已处理。
 
@@ -410,11 +467,21 @@ class Scheduler:
             return False  # Host 无记录，交给本地恢复逻辑
 
         if st.get("alive"):
+            # 状态一致性：数据库可能已是终态（例如曾被标 KILLED），而 Host 说还在跑。
+            # 这是两边记录不一致，不能静默覆盖——保留原状态到恢复说明里，并如实告知。
+            prev_status = run.status
+            if prev_status not in ("RUNNING", "STARTING", "ORPHANED", "UNKNOWN"):
+                run.interrupted_reason = (
+                    f"状态不一致：数据库原记录为 {prev_status}，"
+                    f"但 Task Host 确认进程仍在运行（pid={st.get('pid')}），已按实际运行接管")
+                logger.warning(
+                    f"恢复 run[{run.id}] 状态不一致: db={prev_status} host=RUNNING，按运行中接管")
+            else:
+                run.interrupted_reason = ""
             run.status = "RUNNING"
             run.pid = st.get("pid") or run.pid
             run.process_create_time = st.get("process_create_time") or run.process_create_time
             run.log_path = st.get("log_path") or run.log_path
-            run.interrupted_reason = ""
             run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
             self.store.save_run(run)
             self._publish_status_change(run)
