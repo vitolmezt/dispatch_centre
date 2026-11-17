@@ -390,8 +390,20 @@ def test_running_view_grouping(sched):
 
 @pytest.fixture
 def capture_broadcast(monkeypatch):
-    """拦截 Scheduler.broadcast，收集推送出去的事件。"""
+    """拦截事件广播，收集推送出去的事件。
+
+    阶段3 拆分后广播实现移入 EventBus，门面的 broadcast 只是委托，
+    因此必须 patch EventBus.broadcast 才能截获真实广播。
+    同时 patch 门面方法，兼容拆分前直接调用 self.broadcast() 的路径。
+    """
+    from app.scheduler.events import EventBus
+
     events = []
+
+    def _capture(self, data):
+        events.append(data)
+
+    monkeypatch.setattr(EventBus, "broadcast", _capture)
     monkeypatch.setattr(Scheduler, "broadcast", lambda self, data: events.append(data))
     return events
 

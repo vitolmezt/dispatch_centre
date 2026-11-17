@@ -13,10 +13,12 @@ from typing import Dict, List, Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from .executor import Executor
-from . import identity as identity_mod
-from .models import Job, Run, job_to_api, ServiceGroup
-from .store import Store
+from ..executor import Executor
+from .. import identity as identity_mod
+from ..models import Job, Run, job_to_api, ServiceGroup
+from ..store import Store
+from .events import EventBus
+from .log_manager import LogManager
 
 logger = logging.getLogger("scheduler")
 
@@ -71,14 +73,16 @@ class Scheduler:
         self._heartbeat_stop = False
         self._heartbeat_runs: Dict[str, "Run"] = {}
         self._finished: set = set()
-        self._subscribers: List[queue.Queue] = []
-        self._sub_lock = threading.Lock()
-        self._log_subscribers: Dict[str, List[queue.Queue]] = {}
         self._logs_dir = Path(db_path).parent / "logs"
         try:
             self._logs_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             self._logs_dir = None
+
+        # ---- 子模块（无业务状态，仅持门面回指）----
+        # 订阅队列随子模块迁移：EventBus._subscribers / LogManager._log_subscribers
+        self._events = EventBus(self)
+        self._logs = LogManager(self)
 
         self.aps = BackgroundScheduler()
         self.aps.add_listener(self._job_listener)
@@ -96,63 +100,32 @@ class Scheduler:
         self.broadcast({"type": "run", "event": "started", "run_id": run.id,
                         "job_name": run.job_name, "status": run.status})
 
+    # ---- 日志（实现在 log_manager）----
     def prepare_log_path(self, run: Run) -> str:
-        if not run.log_path:
-            base = self._logs_dir if self._logs_dir else Path("logs")
-            run.log_path = str(Path(base) / f"{run.id}.log")
-        Path(run.log_path).parent.mkdir(parents=True, exist_ok=True)
-        return run.log_path
+        return self._logs.prepare_log_path(run)
 
     def on_log(self, run: Run, line: str, write_file: bool = True):
-        run.append_log(line)
-        if write_file:
-            self._append_log_file(run, line)
-        self.publish_log(run.id, line)
+        return self._logs.on_log(run, line, write_file)
 
     def subscribe_log(self, run_id: str) -> queue.Queue:
-        q: queue.Queue = queue.Queue(maxsize=500)
-        with self._sub_lock:
-            self._log_subscribers.setdefault(run_id, []).append(q)
-        return q
+        return self._logs.subscribe_log(run_id)
 
     def unsubscribe_log(self, run_id: str, q: queue.Queue):
-        with self._sub_lock:
-            subs = self._log_subscribers.get(run_id)
-            if subs:
-                try:
-                    subs.remove(q)
-                except ValueError:
-                    pass
-                if not subs:
-                    self._log_subscribers.pop(run_id, None)
+        return self._logs.unsubscribe_log(run_id, q)
 
     def publish_log(self, run_id: str, line: str):
-        with self._sub_lock:
-            subs = list(self._log_subscribers.get(run_id) or [])
-        if not subs:
-            return
-        payload = f"data: {json.dumps({'type': 'log', 'run_id': run_id, 'line': line}, ensure_ascii=False)}\n\n"
-        for q in subs:
-            try:
-                if q.full():
-                    try:
-                        q.get_nowait()
-                    except queue.Empty:
-                        pass
-                q.put_nowait(payload)
-            except queue.Full:
-                pass
+        return self._logs.publish_log(run_id, line)
 
     def _append_log_file(self, run: Run, line: str):
-        if not self._logs_dir or not run.log_path:
-            return
-        try:
-            path = Path(run.log_path)
-            with path.open("a", encoding="utf-8", errors="replace") as f:
-                f.write(line + "\n")
-        except Exception:
-            pass
+        return self._logs.append_log_file(run, line)
 
+    def _publish_log_end(self, run_id: str):
+        return self._logs.publish_log_end(run_id)
+
+    def read_log_file(self, run_id: str):
+        return self._logs.read_log_file(run_id)
+
+    # ---- 执行完成回调（状态由门面持有）----
     def on_finished(self, run: Run):
         with self._lock:
             self.running.pop(run.id, None)
@@ -164,66 +137,22 @@ class Scheduler:
     def on_user_stopped(self, run: Run):
         self._publish_log_end(run.id)
 
-    def _publish_log_end(self, run_id: str):
-        with self._sub_lock:
-            subs = list(self._log_subscribers.get(run_id) or [])
-        if not subs:
-            return
-        payload = (f"data: "
-                   f"{json.dumps({'type': 'log', 'run_id': run_id, 'end': True}, ensure_ascii=False)}\n\n")
-        for q in subs:
-            try:
-                q.put_nowait(payload)
-            except queue.Full:
-                pass
-
     def publish_finished(self, run: "Run"):
-        with self._lock:
-            if run.id in self._finished:
-                return
-            self._finished.add(run.id)
-        self.broadcast({"type": "run", "event": "finished", "run_id": run.id,
-                        "job_name": run.job_name, "status": run.status})
+        return self._events.publish_finished(run)
 
+
+    # ---- 事件（实现在 events）----
     def _publish_status_change(self, run):
-
-        try:
-            self.broadcast({"type": "run", "event": "status_changed", "run_id": run.id,
-                            "job_name": run.job_name, "status": run.status})
-        except Exception:
-            pass
+        return self._events.publish_status_change(run)
 
     def subscribe(self) -> queue.Queue:
-        q: queue.Queue = queue.Queue(maxsize=100)
-        with self._sub_lock:
-            self._subscribers.append(q)
-        return q
+        return self._events.subscribe()
 
     def unsubscribe(self, q: queue.Queue):
-        with self._sub_lock:
-            try:
-                self._subscribers.remove(q)
-            except ValueError:
-                pass
+        return self._events.unsubscribe(q)
 
     def broadcast(self, data: dict):
-        try:
-            import json
-            payload = f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-        except Exception:
-            return
-        with self._sub_lock:
-            subs = list(self._subscribers)
-        for q in subs:
-            try:
-                if q.full():
-                    try:
-                        q.get_nowait()
-                    except queue.Empty:
-                        pass
-                q.put_nowait(payload)
-            except queue.Full:
-                pass
+        return self._events.broadcast(data)
 
     def _job_listener(self, event):
         if event.code == 4096:
