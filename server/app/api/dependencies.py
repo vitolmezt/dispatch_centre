@@ -10,11 +10,15 @@ get_scheduler()，而不必反向导入 main.py（避免循环导入）。
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import HTTPException, Request
 
 from ..scheduler import Scheduler
+
+if TYPE_CHECKING:
+    from ..services.group_service import GroupService
+    from ..services.job_service import JobService
 
 _scheduler: Optional[Scheduler] = None
 
@@ -35,6 +39,18 @@ def get_scheduler() -> Scheduler:
 def peek_scheduler() -> Optional[Scheduler]:
     """只读探测：未初始化时返回 None，不抛异常（供 shutdown 使用）。"""
     return _scheduler
+
+
+def get_job_service() -> "JobService":
+    """任务写操作业务服务（每次请求按需构造，无状态，仅持门面回指）。"""
+    from ..services.job_service import JobService
+    return JobService(get_scheduler())
+
+
+def get_group_service() -> "GroupService":
+    """服务组业务服务（同上）。"""
+    from ..services.group_service import GroupService
+    return GroupService(get_scheduler())
 
 
 def _bearer_token(request: Request) -> str:

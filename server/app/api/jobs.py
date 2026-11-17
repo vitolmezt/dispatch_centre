@@ -2,31 +2,30 @@
 """任务管理路由（8 个端点）。
 
 GET    /api/jobs                    任务列表（分页 / 类型 / 启用 / 名称搜索 / 排序）
-POST   /api/jobs                    新增任务
-PUT    /api/jobs/{name}             更新任务（含改名）
-DELETE /api/jobs/{name}             删除任务
-POST   /api/jobs/{name}/enable      启用 / 停用
-POST   /api/jobs/{name}/trigger     手动触发（阶段1B 后迁至 run_service）
+POST   /api/jobs                    新增任务           → JobService
+PUT    /api/jobs/{name}             更新任务（含改名）  → JobService
+DELETE /api/jobs/{name}             删除任务           → JobService
+POST   /api/jobs/{name}/enable      启用 / 停用         → JobService
+POST   /api/jobs/{name}/trigger     手动触发           → 直接调 Scheduler（run_service 暂缓）
 GET    /api/job-schema              各类型的参数表单结构
 GET    /api/groups                  任务分组元信息
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from .. import audit
 from .. import auth
 from .. import constants
-from ..models import Job, JOB_PARAM_SCHEMA
-from .dependencies import get_scheduler
+from ..models import JOB_PARAM_SCHEMA
+from .dependencies import get_job_service, get_scheduler
+
+if TYPE_CHECKING:
+    from ..services.job_service import JobService
 
 router = APIRouter()
-
-
-def _job_err(detail: str) -> HTTPException:
-    return HTTPException(status_code=400, detail=detail)
 
 
 @router.get("/api/jobs", dependencies=[Depends(auth.auth_required)])
@@ -49,63 +48,27 @@ def list_jobs(type: Optional[str] = Query(None, alias="type"),
 
 
 @router.post("/api/jobs", dependencies=[Depends(auth.auth_required)])
-def create_job(payload: dict = Body(...)):
-    s = get_scheduler()
-    job = Job.from_dict(payload)
-    errs = job.validate()
-    if errs:
-        raise _job_err("；".join(errs))
-    if job.name in s.jobs:
-        raise HTTPException(status_code=409, detail=f"任务名已存在: {job.name}")
-    s.add_job(job)
-    audit.audit("job.create", obj=job.name, detail=f"type={job.type}")
-    return {"ok": True, "name": job.name}
+def create_job(payload: dict = Body(...),
+               svc: "JobService" = Depends(get_job_service)):
+    return svc.create_job(payload)
 
 
 @router.put("/api/jobs/{name}", dependencies=[Depends(auth.auth_required)])
-def update_job(name: str, payload: dict = Body(...)):
-    s = get_scheduler()
-    old = s.jobs.get(name)
-    if old is None:
-        raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
-    data = dict(payload)
-    new_name = str(data.get("name") or "").strip() or name
-    data["name"] = new_name
-    if new_name != name and new_name in s.jobs:
-        raise HTTPException(status_code=409, detail=f"任务名已存在: {new_name}")
-    job = Job.from_dict(data)
-    errs = job.validate()
-    if errs:
-        raise _job_err("；".join(errs))
-    s.update_job(job, old_name=name)
-    detail = f"type={job.type}" + (f" renamed_from={name}" if new_name != name else "")
-    audit.audit("job.update", obj=new_name, detail=detail)
-    return {"ok": True, "name": job.name, "renamed": new_name != name}
+def update_job(name: str, payload: dict = Body(...),
+               svc: "JobService" = Depends(get_job_service)):
+    return svc.update_job(name, payload)
 
 
 @router.delete("/api/jobs/{name}", dependencies=[Depends(auth.auth_required)])
-def delete_job(name: str):
-    s = get_scheduler()
-    if name not in s.jobs:
-        raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
-    s.delete_job(name)
-    audit.audit("job.delete", obj=name)
-    return {"ok": True, "name": name}
+def delete_job(name: str, svc: "JobService" = Depends(get_job_service)):
+    return svc.delete_job(name)
 
 
 @router.post("/api/jobs/{name}/enable", dependencies=[Depends(auth.auth_required)])
-def toggle_job(name: str, payload: dict = Body(...)):
-    s = get_scheduler()
-    job = s.jobs.get(name)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"任务不存在: {name}")
+def toggle_job(name: str, payload: dict = Body(...),
+               svc: "JobService" = Depends(get_job_service)):
     enabled = bool(payload.get("enabled", True))
-    try:
-        s.set_job_enabled(name, enabled)
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    audit.audit("job.enable", obj=name, detail=f"enabled={enabled}")
-    return {"ok": True, "name": name, "enabled": enabled}
+    return svc.set_enabled(name, enabled)
 
 
 @router.post("/api/jobs/{name}/trigger", dependencies=[Depends(auth.auth_required)])
