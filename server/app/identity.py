@@ -17,30 +17,6 @@ IS_WINDOWS = os.name == "nt"
 IS_LINUX = sys.platform.startswith("linux")
 
 
-class CannotProveIdentity(Exception):
-    """无法证明某 pid 与某 run 属于同一 OS 进程时抛出（安全侧拒绝动作）。"""
-
-
-
-def pidfd_available() -> bool:
-    """pidfd 是否可用（Linux 内核 >=5.3，os.pidfd_open 存在且能拿到 fd）。"""
-    if not IS_LINUX:
-        return False
-    if not hasattr(os, "pidfd_open"):
-        return False
-    return True
-
-
-def job_object_support() -> str:
-    """命名 Job Object 支持情况：'none' | 'create' | 'reopen'。
-
-    Windows 上若本进程能创建命名 Job Object，则返回 'create'；重启后若同名
-    Job 仍在且能打开，返回 'reopen'。实际唯一句柄在运行时拿，这里只做能力宣告。
-    """
-    return "none"
-
-
-
 def get_process_create_time(pid: int) -> Optional[str]:
     try:
         pid = int(pid)
@@ -321,16 +297,3 @@ def _posix_safe_kill(run, pid: int, group_id: Optional[int]) -> Optional[str]:
         return "无权限终止该进程组，拒绝继续"
     except Exception as e:  # noqa: BLE001
         return f"killpg 失败: {str(e)[:200]}"
-
-
-def read_cmdline(pid: int) -> Optional[List[str]]:
-    """读取某 pid 的命令行参数（用于对照指纹，辅助佐证）."""
-    try:
-        if IS_LINUX:
-            raw = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\x00")
-            return [x.decode("utf-8", "replace") for x in raw if x]
-        elif IS_WINDOWS:
-            return None
-    except Exception:  # noqa: BLE001
-        return None
-    return None

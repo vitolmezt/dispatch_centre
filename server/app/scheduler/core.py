@@ -77,7 +77,6 @@ class Scheduler:
         self.heartbeat_interval = _heartbeat_interval_sec()
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = False
-        self._heartbeat_runs: Dict[str, "Run"] = {}
         self._finished: set = set()
         self._logs_dir = Path(db_path).parent / "logs"
         try:
