@@ -22,6 +22,7 @@ from .log_manager import LogManager
 from .views import Views
 from .heartbeat import HeartbeatMonitor
 from .registration import JobRegistration
+from .recovery import RecoveryManager
 
 logger = logging.getLogger("scheduler")
 
@@ -89,6 +90,7 @@ class Scheduler:
         self._views = Views(self)
         self._heartbeat = HeartbeatMonitor(self)
         self._registration = JobRegistration(self)
+        self._recovery = RecoveryManager(self)
 
         self.aps = BackgroundScheduler()
         self.aps.add_listener(self._job_listener)
@@ -234,180 +236,27 @@ class Scheduler:
             run.error = str(e)
             self.on_finished(run)
 
-    def _adopt_orphan(self, run: Run):
-
-        if not identity_mod.verify_identity(run, run.pid):
-            return False, "身份核验失败(PID/创建时刻不匹配)，拒绝接管"
-        if not run.log_path:
-            return False, "缺少日志文件锚点，无法重建监控"
-        if not os.path.isfile(run.log_path):
-            return False, "日志文件不存在，无法恢复采集"
-        try:
-            with open(run.log_path, "a", encoding="utf-8", errors="replace"):
-                pass
-        except OSError as e:
-            return False, f"日志文件不可追加，无法恢复采集: {e}"
-        if not identity_mod.verify_identity(run, run.pid):
-            return False, "停止能力未通过身份核验，拒绝接管"
-        return True, "四问全过"
-
+    # ---- 启动恢复 / 孤儿接管 / 状态核对（实现在 recovery）----
     def recover_on_start(self):
-        candidates = self.store.running_runs()
-        for run in candidates:
-            try:
-                self._recover_one(run)
-                if run.status == "RUNNING":
-                    with self._lock:
-                        self.running[run.id] = run
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"恢复 run[{run.id}] 时异常: {e}")
-        try:
-            self._reconcile_terminal_runs()
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"终态记录一致性核对失败: {e}")
+        return self._recovery.recover_on_start()
 
     def _reconcile_terminal_runs(self):
-        fixed = 0
-        for run in self.store.recent_runs(200):
-            if run.status in ("RUNNING", "STARTING", "ORPHANED", "UNKNOWN"):
-                continue  # 非终态已由 _recover_one 处理
-            pid = getattr(run, "pid", None)
-            if not pid:
-                continue
-            if not identity_mod.verify_identity(run, pid):
-                continue
-            if not identity_mod.process_is_alive(run, pid):
-                continue
-
-            prev = run.status
-            run.status = "RUNNING"
-            run.end = None
-            run.exit_code = None
-            run.error = ""
-            run.interrupted_reason = (
-                f"状态不一致已修正：数据库原为 {prev}，"
-                f"但进程仍在运行（pid={pid}），已按运行中接管")
-            run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
-            self.store.save_run(run)
-            self._publish_status_change(run)
-            with self._lock:
-                self.running[run.id] = run
-            t = threading.Thread(target=self._detached_watch_loop, args=(run,),
-                                 name=f"reconcile-watch-{run.id}", daemon=True)
-            t.start()
-            fixed += 1
-            logger.warning(
-                f"状态不一致已修正 run[{run.id}]: db={prev} -> RUNNING (pid={pid})")
-        if fixed:
-            logger.info(f"终态记录核对完成：修正 {fixed} 条不一致记录")
-
-    def _resume_detached_monitor(self, run: Run):
-        t = threading.Thread(target=self._detached_watch_loop, args=(run,),
-                             name=f"detach-watch-{run.id}", daemon=True)
-        t.start()
-        logger.info(f"恢复 run[{run.id}] detach 监控已重建 (pid={run.pid})")
-
-    def _detached_watch_loop(self, run: Run):
-        log_path = run.log_path or ""
-        pos = int(getattr(run, "log_offset", 0) or 0)
-        try:
-            if log_path and os.path.isfile(log_path) and os.path.getsize(log_path) < pos:
-                pos = 0  # 文件被截断/轮转
-        except OSError:
-            pass
-        while not self._heartbeat_stop:
-            try:
-                with self._lock:
-                    cur = self.running.get(run.id)
-                if cur is None or cur.status not in ("RUNNING", "ORPHANED"):
-                    return
-                if log_path:
-                    pos = self.executor._pump_log(run, log_path, pos)
-                if not identity_mod.process_is_alive(run, run.pid):
-                    self._mark_detached_gone(run)
-                    return
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"detach 监控 run[{run.id}] 异常: {e}")
-            if self._heartbeat_stop:
-                return
-            time.sleep(1)
-
-    def _mark_detached_gone(self, run: Run):
-        """detach 进程已确认退出：写入结束时间并归入历史。"""
-        with self._lock:
-            cur = self.running.pop(run.id, None) or run
-            cur.status = "INTERRUPTED"
-            cur.interrupted_reason = (
-                cur.interrupted_reason or "独立进程已退出（OS 探针核验），标记为中断并归入历史")
-            cur.end = cur.end or datetime.now().astimezone().isoformat(timespec="seconds")
-        self.store.save_run(cur)
-        self._publish_status_change(cur)
-        self.publish_finished(cur)
-        self._publish_log_end(cur.id)
-        logger.info(f"detach run[{cur.id}] 进程已退出 -> INTERRUPTED")
+        return self._recovery.reconcile_terminal_runs()
 
     def _recover_one(self, run: Run):
-        if not run.process_create_time:
-            if run.status == "STARTING":
-                run.status = "UNKNOWN"
-                run.interrupted_reason = ("残留 STARTING 预登记，无有效身份凭据；"
-                                          "启动意图已保存，无法认领具体进程，转待核查")
-            elif run.status in ("RUNNING", "ORPHANED", "UNKNOWN"):
-                run.status = "UNKNOWN"
-                run.interrupted_reason = ("Phase-1 遗留：缺少进程身份凭据(create_time)，"
-                                          "无法安全核验，转待核查")
-            self.store.save_run(run)
-            self._publish_status_change(run)
-            return
+        return self._recovery.recover_one(run)
 
-        alive = identity_mod.process_is_alive(run, run.pid)
-        if alive:
-            run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
-            if run.status in ("STARTING",):
-                run.status = "RUNNING"
-                run.interrupted_reason = ""
-                self.store.save_run(run)
-                self._publish_status_change(run)
-                logger.info(f"恢复 run[{run.id}] 存活 -> RUNNING")
-                return
-            if run.status == "UNKNOWN":
-                run.status = "ORPHANED"
-                run.interrupted_reason = ("重启恢复：进程存活且身份匹配，转孤儿管理，"
-                                          "待接管核查")
-                self.store.save_run(run)
-                self._publish_status_change(run)
-                logger.info(f"恢复 run[{run.id}] 存活 & 身份匹配 -> ORPHANED")
-                return
-            if run.status == "ORPHANED":
-                adopted, note = self._adopt_orphan(run)
-                run.adopted = adopted
-                if adopted:
-                    run.status = "RUNNING"
-                    run.interrupted_reason = ""
-                else:
-                    run.interrupted_reason = (run.interrupted_reason or
-                                              "四问接管未全过: " + note)
-                self.store.save_run(run)
-                self._publish_status_change(run)
-                logger.info(f"恢复 run[{run.id}] ORPHANED -> {'RUNNING(接管)' if adopted else '保持ORPHANED'} {note}")
-                if adopted and getattr(run, "detached", False):
-                    self._resume_detached_monitor(run)
-                return
-            self.store.save_run(run)
-            logger.info(f"恢复 run[{run.id}] RUNNING 存活 -> 保持")
-            if getattr(run, "detached", False):
-                self._resume_detached_monitor(run)
-            return
-        if run.status == "INTERRUPTED":
-            return
-        run.status = "INTERRUPTED"
-        run.interrupted_reason = run.interrupted_reason or (
-            "重启恢复：进程已确认不在运行（OS 探针核验），标记为中断并归入历史")
-        run.end = run.end or datetime.now().astimezone().isoformat(timespec="seconds")
-        run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
-        self.store.save_run(run)
-        self._publish_status_change(run)
-        logger.info(f"恢复 run[{run.id}] 已确认结束 -> INTERRUPTED")
+    def _adopt_orphan(self, run: Run):
+        return self._recovery.adopt_orphan(run)
+
+    def _resume_detached_monitor(self, run: Run):
+        return self._recovery.resume_detached_monitor(run)
+
+    def _detached_watch_loop(self, run: Run):
+        return self._recovery.detached_watch_loop(run)
+
+    def _mark_detached_gone(self, run: Run):
+        return self._recovery.mark_detached_gone(run)
 
     # ---- 心跳（实现在 heartbeat）----
     def _heartbeat_loop(self):
