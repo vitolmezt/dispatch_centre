@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
-"""登录失败限流与客户端 IP 解析。
-
-从 auth.py 迁出，逻辑逐行保持一致。
-
-限流策略：滑动窗口内失败次数超限则进入冷却期。
-默认值：窗口 900s / 最多 5 次失败 / 冷却 300s
-（可用 SC_LOGIN_WINDOW / SC_LOGIN_MAX_FAIL / SC_LOGIN_COOLDOWN 覆盖）。
-"""
+"""登录失败限流与客户端 IP 解析。"""
 from __future__ import annotations
 
 import os
@@ -39,7 +32,6 @@ class _LoginThrottle:
             self._fails.pop(ip, None)
 
     def locked(self, ip: str, now: float = None) -> float:
-        """返回该 IP 是否处于冷却。若是，返回剩余冷却秒数；否则 0。"""
         now = now or time.time()
         with self._lock:
             self._prune(now, ip)
@@ -63,7 +55,6 @@ _login_throttle = _LoginThrottle(_LOGIN_WINDOW, _LOGIN_MAX_FAIL, _LOGIN_COOLDOWN
 
 
 def client_ip(request: Request) -> str:
-    """从请求解析客户端 IP（优先 X-Forwarded-For 首个地址）。"""
     try:
         xff = request.headers.get("X-Forwarded-For")
         if xff:
@@ -76,7 +67,6 @@ def client_ip(request: Request) -> str:
 
 
 def login_locked(ip: str) -> float:
-    """登录是否被限流（返回剩余冷却秒数，0 表示未限流）。"""
     return _login_throttle.locked(ip)
 
 

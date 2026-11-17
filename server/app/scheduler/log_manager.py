@@ -1,19 +1,5 @@
 # -*- coding: utf-8 -*-
-"""日志文件管理与日志推送。
-
-从 scheduler.py 迁出，逻辑逐行保持一致。
-
-管理边界：
-  本模块持有 **日志订阅者队列** `_log_subscribers` 与其同步锁
-  `_log_sub_lock`。这是连接级资源（每次 SSE 连接对应一个队列），
-  不是业务运行状态，因此随模块迁移自行持有，不构成状态分裂。
-
-  `run.log` / `run.log_path` / `run.log_offset` 等**运行状态字段仍在 Run
-  对象上**，由门面持有；本模块只读写这些字段，不另存副本。
-
-  日志目录 `_logs_dir` 由门面持有并在初始化时注入，
-  以保证与 db 路径同源（db 所在目录下的 logs/）。
-"""
+"""日志文件管理与日志推送。"""
 from __future__ import annotations
 
 import json
@@ -26,16 +12,12 @@ from ..models import Run
 
 
 class LogManager:
-    """日志文件写入、增量订阅与 SSE 推送。"""
 
     def __init__(self, sched) -> None:
         self._sched = sched
         self._log_subscribers: Dict[str, List[queue.Queue]] = {}
         self._log_sub_lock = threading.Lock()
 
-    # ------------------------------------------------------------------
-    # 日志文件路径
-    # ------------------------------------------------------------------
     def prepare_log_path(self, run: Run) -> str:
         if not run.log_path:
             base = self._sched._logs_dir if self._sched._logs_dir else Path("logs")
@@ -67,18 +49,12 @@ class LogManager:
         except Exception:  # noqa: BLE001
             return None
 
-    # ------------------------------------------------------------------
-    # 日志写入（Run 对象上的 log 列表 + 文件 + 推送）
-    # ------------------------------------------------------------------
     def on_log(self, run: Run, line: str, write_file: bool = True) -> None:
         run.append_log(line)
         if write_file:
             self.append_log_file(run, line)
         self.publish_log(run.id, line)
 
-    # ------------------------------------------------------------------
-    # 日志订阅
-    # ------------------------------------------------------------------
     def subscribe_log(self, run_id: str) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=500)
         with self._log_sub_lock:
@@ -96,9 +72,6 @@ class LogManager:
                 if not subs:
                     self._log_subscribers.pop(run_id, None)
 
-    # ------------------------------------------------------------------
-    # 推送
-    # ------------------------------------------------------------------
     def publish_log(self, run_id: str, line: str) -> None:
         with self._log_sub_lock:
             subs = list(self._log_subscribers.get(run_id) or [])
@@ -118,7 +91,6 @@ class LogManager:
                 pass
 
     def publish_log_end(self, run_id: str) -> None:
-        """推送日志结束哨兵（SSE 流据此断开）。"""
         with self._log_sub_lock:
             subs = list(self._log_subscribers.get(run_id) or [])
         if not subs:

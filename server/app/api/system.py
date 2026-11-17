@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""系统信息路由（4 个端点）。
-
-GET /api/constants   公开 —— 枚举字典（状态 / 类型 / 启用）
-GET /api/health      公开 —— 健康检查
-GET /api/config      公开 —— 启动配置信息
-GET /api/audit       认证 —— 审计日志（最新 N 条）
-"""
+"""系统信息路由"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query

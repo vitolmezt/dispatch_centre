@@ -1,19 +1,5 @@
 # -*- coding: utf-8 -*-
-"""长期管理凭证：加载、自动生成、校验。
-
-从 auth.py 迁出，逻辑逐行保持一致。
-
-来源优先级（不可更改）：
-  SC_TOKEN 环境变量
-    → SC_TOKEN_FILE 指定文件
-    → 默认 data/sc_token
-    → SC_AUTO_GEN_TOKEN=1 时自动生成
-
-安全要点：
-  - 密钥文件在 Windows 上用 icacls 收紧权限（SYSTEM/Administrators/当前用户只读）
-  - 校验用 hmac.compare_digest 防时序攻击
-  - LONG_TERM_TOKEN 在模块加载时解析一次（改环境变量需重启）
-"""
+"""长期管理凭证：加载、自动生成、校验。"""
 from __future__ import annotations
 
 import hmac
@@ -42,12 +28,11 @@ def _lockdown_keyfile(path: Path) -> None:
              "/grant:r", "*S-1-5-32-544:(R)",      # Administrators
              "/grant:r", f"{os.environ.get('USERNAME', 'S-1-5-11')}:(R)"],
             check=False, capture_output=True)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("回收令牌文件多余权限失败（不影响使用）")
 
 
 def _auto_gen(path: Path) -> str:
-    """生成随机 token 并写入密钥文件（权限收紧）。幂等：已存在则读取返回。"""
     if path.is_file():
         val = path.read_text(encoding="utf-8").strip()
         if val:
@@ -59,7 +44,7 @@ def _auto_gen(path: Path) -> str:
         _lockdown_keyfile(path)
         logger.warning("已自动生成管理凭证并保存到：%s （请妥善保管，勿提交到仓库）", str(path))
         return val
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.error("自动生成凭证失败：%s", e)
         return ""
 

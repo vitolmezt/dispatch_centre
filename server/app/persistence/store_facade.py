@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Store 门面：组合 Database + 三个 Repository。
-
-保留原 Store 的全部方法名，保证 `sched.store.xxx` 的既有调用完全不变
-（测试中 45 处、main.py 中 5 处直接使用）。
-
-三个 Repository 共享同一个 Database 实例（同一连接、同一锁），
-不各自创建连接，符合阶段4 的约束。
-"""
+"""Store 门面"""
 from __future__ import annotations
 
 from typing import Dict, List, Optional
@@ -19,7 +12,6 @@ from .run_repository import RunRepository
 
 
 class Store:
-    """持久化门面（对外接口与拆分前完全一致）。"""
 
     def __init__(self, db_path: str) -> None:
         self._db = Database(db_path)
@@ -27,9 +19,6 @@ class Store:
         self._runs = RunRepository(self._db)
         self._groups = GroupRepository(self._db)
 
-    # ------------------------------------------------------------------
-    # Job
-    # ------------------------------------------------------------------
     def upsert_jobs(self, jobs: List[Job]) -> None:
         return self._jobs.upsert_jobs(jobs)
 
@@ -45,9 +34,6 @@ class Store:
     def get_job(self, name: str) -> Optional[Job]:
         return self._jobs.get_job(name)
 
-    # ------------------------------------------------------------------
-    # ServiceGroup
-    # ------------------------------------------------------------------
     def upsert_service_group(self, group: ServiceGroup) -> None:
         return self._groups.upsert_service_group(group)
 
@@ -60,9 +46,6 @@ class Store:
     def delete_service_group(self, name: str) -> None:
         return self._groups.delete_service_group(name)
 
-    # ------------------------------------------------------------------
-    # Run
-    # ------------------------------------------------------------------
     def save_run(self, run: Run, heartbeat_only: bool = False) -> None:
         return self._runs.save_run(run, heartbeat_only=heartbeat_only)
 
@@ -100,9 +83,6 @@ class Store:
     def new_run_id() -> str:
         return RunRepository.new_run_id()
 
-    # ------------------------------------------------------------------
-    # 生命周期 / 内部方法（保留以便兼容既有引用）
-    # ------------------------------------------------------------------
     def close(self) -> None:
         return self._db.close()
 

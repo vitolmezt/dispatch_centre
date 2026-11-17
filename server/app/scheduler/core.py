@@ -83,9 +83,6 @@ class Scheduler:
             self._logs_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             self._logs_dir = None
-
-        # ---- 子模块（无业务状态，仅持门面回指）----
-        # 订阅队列随子模块迁移：EventBus._subscribers / LogManager._log_subscribers
         self._events = EventBus(self)
         self._logs = LogManager(self)
         self._views = Views(self)
@@ -111,7 +108,6 @@ class Scheduler:
         self.broadcast({"type": "run", "event": "started", "run_id": run.id,
                         "job_name": run.job_name, "status": run.status})
 
-    # ---- 日志（实现在 log_manager）----
     def prepare_log_path(self, run: Run) -> str:
         return self._logs.prepare_log_path(run)
 
@@ -136,7 +132,6 @@ class Scheduler:
     def read_log_file(self, run_id: str):
         return self._logs.read_log_file(run_id)
 
-    # ---- 执行完成回调（状态由门面持有）----
     def on_finished(self, run: Run):
         with self._lock:
             self.running.pop(run.id, None)
@@ -151,8 +146,6 @@ class Scheduler:
     def publish_finished(self, run: "Run"):
         return self._events.publish_finished(run)
 
-
-    # ---- 事件（实现在 events）----
     def _publish_status_change(self, run):
         return self._events.publish_status_change(run)
 
@@ -169,7 +162,6 @@ class Scheduler:
         if event.code == 4096:
             pass
 
-    # ---- 配置加载与 cron 注册（实现在 registration）----
     def load_config(self) -> List[str]:
         return self._registration.load_config()
 
@@ -199,21 +191,17 @@ class Scheduler:
             run = self.running.get(run_id)
             if run is None:
                 continue
-            # 独立后台进程（detach）随服务常驻：停止调度服务不连带中止它，
-            # 交给下次启动的恢复机制按身份核验后重新接管；仅中止非 detach 运行实例。
             if getattr(run, "detached", False):
                 continue
             self.abort(run_id)
         self.aps.shutdown(wait=False)
 
-    # ---- 触发（实现在 process_control）----
     def _trigger_job(self, job_name: str, trigger: str = "manual"):
         return self._control.trigger_job(job_name, trigger)
 
     def _run_worker(self, run: Run, job: Job):
         return self._control.run_worker(run, job)
 
-    # ---- 启动恢复 / 孤儿接管 / 状态核对（实现在 recovery）----
     def recover_on_start(self):
         return self._recovery.recover_on_start()
 
@@ -235,7 +223,6 @@ class Scheduler:
     def _mark_detached_gone(self, run: Run):
         return self._recovery.mark_detached_gone(run)
 
-    # ---- 心跳（实现在 heartbeat）----
     def _heartbeat_loop(self):
         return self._heartbeat.loop()
 
@@ -249,7 +236,6 @@ class Scheduler:
     def _check_heartbeat_timeout(self, run: Run):
         return self._heartbeat.check_timeout(run)
 
-    # ---- 触发 / 中止 / 停止（实现在 process_control）----
     def trigger(self, job_name: str):
         return self._control.trigger(job_name)
 
@@ -276,7 +262,6 @@ class Scheduler:
         self._register_job(job)
 
     def update_job(self, job: Job, old_name: Optional[str] = None):
-        """更新任务。old_name 与 job.name 不同时表示改名。"""
         renamed = bool(old_name) and old_name != job.name
         with self._lock:
             existed = job.name in self.jobs or (old_name in self.jobs if old_name else False)
@@ -297,7 +282,6 @@ class Scheduler:
             logger.info(f"renamed job {old_name} -> {job.name}")
 
     def _rename_in_service_groups(self, old_name: str, new_name: str):
-        """任务改名后，同步更新服务组成员里的引用"""
         changed = []
         for group in self.service_groups.values():
             hit = False
@@ -342,7 +326,6 @@ class Scheduler:
     def _unregister_job(self, name: str):
         return self._registration.unregister_job(name)
 
-    # ---- 任务 / 分组 / 服务组 视图（实现在 views）----
     def jobs_view(self, *, sort: Optional[str] = None, order: str = "desc") -> List[dict]:
         return self._views.jobs_view(sort=sort, order=order)
 
@@ -365,7 +348,6 @@ class Scheduler:
     def _group_member_last(self, job_name: str) -> Optional[dict]:
         return self._views._group_member_last(job_name)
 
-    # ---- 服务组（实现在 service_groups）----
     def add_service_group(self, group: ServiceGroup):
         return self._group_exec.add(group)
 
@@ -385,7 +367,6 @@ class Scheduler:
         return self._views.get_running(run_id)
 
     def read_log_file(self, run_id: str) -> Optional[List[str]]:
-        # 实现在 log_manager（此处保留方法名以兼容既有调用）
         return self._logs.read_log_file(run_id)
 
     def _sort_key(self, obj, field: str):
@@ -394,7 +375,6 @@ class Scheduler:
             return ""
         return v
 
-    # ---- 运行中 / 历史 视图（实现在 views）----
     def running_view(self, *, job_type: Optional[str] = None, q: Optional[str] = None,
                      status: Optional[str] = None,
                      sort: Optional[str] = None, order: str = "desc",

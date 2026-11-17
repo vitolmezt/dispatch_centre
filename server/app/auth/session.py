@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""短期会话 token：签发、校验、注销。
-
-从 auth.py 迁出，逻辑逐行保持一致。
-
-设计：内存会话表，单机够用；服务重启即清空（强制重新登录）。
-TTL 取 DEFAULT_SESSION_TTL（默认 12h）。
-"""
+"""短期会话 token：签发、校验、注销。"""
 from __future__ import annotations
 
 import secrets
@@ -17,7 +11,6 @@ from .token import DEFAULT_SESSION_TTL
 
 
 class _SessionStore:
-    """内存会话表：session_id -> {exp, created}。"""
 
     def __init__(self) -> None:
         self._sessions: Dict[str, dict] = {}

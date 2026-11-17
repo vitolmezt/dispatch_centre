@@ -1,18 +1,5 @@
 # -*- coding: utf-8 -*-
-"""服务组执行协调：增删改 + 整组启停。
-
-从 scheduler.py 迁出，逻辑逐行保持一致。
-
-行为保持不变：
-  - start 按成员 order 升序逐个触发；已在运行的成员标记 already_running 并跳过
-  - stop 只停止当前 RUNNING 的成员，逐个调 stop() 并汇总结果
-  - 任一成员出错即 ok=False，errors 中带明细
-  - not_found 单独区分，供 API 映射 404
-
-状态所有权：
-  service_groups / jobs / running / store / _lock 由 Scheduler 门面唯一持有。
-  本模块不复制业务状态；启停分别委托门面的 _trigger_job / stop。
-"""
+"""服务组执行协调：增删改 + 整组启停。"""
 from __future__ import annotations
 
 import logging

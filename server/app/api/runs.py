@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""执行记录与运行控制路由（6 个端点）。
-
-GET    /api/running                  运行中实例列表（分页 / 过滤 / 排序）
-GET    /api/history                  执行历史（分页 / 过滤 / 排序）
-DELETE /api/history                  批量删除历史
-GET    /api/runs/{run_id}            单次执行详情（含日志）
-POST   /api/runs/{run_id}/abort      中止运行
-POST   /api/runs/{run_id}/stop       停止 detach 后台进程
-
-说明：按保守方案，运行相关接口暂不引入 run_service，直接调用 Scheduler。
-后续若运行编排确实变复杂，再抽 run_service。
-"""
+"""执行记录与运行控制路由"""
 from __future__ import annotations
 
 from typing import Optional

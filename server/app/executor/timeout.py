@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""超时管理。
-
-从 executor.py 迁出，逻辑逐行保持一致。
-
-仅对非 detach 任务生效：detach 任务随服务常驻，不设超时。
-超时触发时把状态置为 TIMEDOUT 并终止进程树。
-"""
+"""超时管理。"""
 from __future__ import annotations
 
 import subprocess

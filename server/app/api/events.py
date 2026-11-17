@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""事件流与文件选择器路由（3 个端点）。
-
-GET  /api/events              全局 SSE 事件流（任务开始 / 结束 / 状态收敛）
-GET  /api/runs/{run_id}/stream 单次执行的日志 SSE 流
-POST /api/fs/pick             原生文件 / 目录选择器
-
-SSE 行为约束（不得改动）：
-  - 首帧发送 retry: 3000
-  - 15s 无数据发送 ": keepalive"
-  - 结束时发送 {"type":"log","run_id":...,"end":true}
-"""
+"""事件流与文件选择器路由"""
 from __future__ import annotations
 
 import json
@@ -46,7 +36,7 @@ def events():
                     payload = q.get(timeout=15)
                     yield payload
                 except queue.Empty:
-                    yield ": keepalive\n\n"  # 心跳，保持连接存活
+                    yield ": keepalive\n\n"
         finally:
             s.unsubscribe(q)
 

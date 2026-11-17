@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Job 数据访问。
-
-从 store.py 迁出，逻辑逐行保持一致。
-
-必须保留的兼容逻辑：
-  1. upsert_jobs 保留原 created_at（不因更新而丢失创建时间）
-  2. rename_job 同时回填 runs 表的 job_name 列 **和** run_json 内嵌的
-     job_name；run_json 损坏时只迁列、不覆盖原始内容，避免进一步破坏记录
-  3. 改名全过程在单一事务内，异常回滚
-
-连接与锁由共享的 Database 提供，本模块不自行创建连接。
-"""
+"""Job 数据访问。"""
 from __future__ import annotations
 
 import json
@@ -28,9 +17,6 @@ class JobRepository:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    # ------------------------------------------------------------------
-    # 写入
-    # ------------------------------------------------------------------
     def upsert_jobs(self, jobs: List[Job]) -> None:
         db = self._db
         with db.lock:
@@ -82,15 +68,12 @@ class JobRepository:
                     "created_at=excluded.created_at",
                     (job.name, json.dumps(job.to_dict()), now, created),
                 )
-                # 回填历史执行记录：独立 job_name 列 + run_json 内嵌 job_name
                 c.execute("SELECT id, run_json FROM runs WHERE job_name=?", (old_name,))
                 moved_rows = c.fetchall()
                 for r in moved_rows:
                     try:
                         payload = json.loads(r["run_json"])
                     except (TypeError, ValueError):
-                        # run_json 损坏/不是合法 JSON：只迁独立 job_name 列，
-                        # 不覆盖原始内容，避免进一步破坏该记录
                         c.execute("UPDATE runs SET job_name=? WHERE id=?",
                                   (job.name, r["id"]))
                         continue
@@ -108,9 +91,6 @@ class JobRepository:
                 db.conn.rollback()
                 raise
 
-    # ------------------------------------------------------------------
-    # 读取
-    # ------------------------------------------------------------------
     def load_jobs(self) -> Dict[str, Job]:
         db = self._db
         with db.lock:

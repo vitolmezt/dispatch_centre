@@ -1,21 +1,5 @@
 # -*- coding: utf-8 -*-
-"""运行控制：触发、中止、停止与孤儿清理。
-
-从 scheduler.py 迁出，逻辑逐行保持一致。
-
-⚠ 停止/中止是安全敏感路径，行为必须与拆分前完全一致：
-
-  1. 身份核验失败一律拒绝终止，且**不谎报成功**
-     （返回 ok=False / stop=False，附 process_still_exists 供排查）
-  2. 停止优先用 Job 句柄终止整组，无句柄时回退进程树（safe_kill）
-  3. via_shell 任务停止后按父 pid 精确清理 shell 孤儿
-  4. abort 在无 Popen 句柄时（重启恢复/孤儿实例）回落到 stop，
-     避免「已标记用户中止但进程其实还活着」的假成功
-
-状态所有权：
-  jobs / running / store / _lock 由 Scheduler 门面唯一持有。
-  本模块不复制任何业务状态，只通过门面读写。
-"""
+"""运行控制：触发、中止、停止与孤儿清理。"""
 from __future__ import annotations
 
 import logging
@@ -31,16 +15,11 @@ logger = logging.getLogger("scheduler")
 
 
 class ProcessController:
-    """任务触发与运行实例的停止/中止。"""
 
     def __init__(self, sched) -> None:
         self._sched = sched
 
-    # ------------------------------------------------------------------
-    # 触发
-    # ------------------------------------------------------------------
     def trigger(self, job_name: str):
-        """对外触发入口：返回 None（不存在）/ "disabled" / "blocked" / Run。"""
         s = self._sched
         with s._lock:
             if job_name not in s.jobs:
@@ -52,7 +31,6 @@ class ProcessController:
         return self.trigger_job(job_name, "api")
 
     def trigger_job(self, job_name: str, trigger: str = "manual"):
-        """内部触发：预登记 STARTING 后起线程执行。"""
         s = self._sched
         with s._lock:
             job = s.jobs.get(job_name)
@@ -87,25 +65,17 @@ class ProcessController:
             run.error = str(e)
             s.on_finished(run)
 
-    # ------------------------------------------------------------------
-    # 中止（用户主动）
-    # ------------------------------------------------------------------
     def abort(self, run_id: str) -> bool:
         s = self._sched
         with s._lock:
             run = s.running.get(run_id)
         if run is None:
-            # 重启恢复/孤儿实例没有 Popen 句柄，回落到按 pid 身份核验的停止逻辑，
-            # 否则会出现「已标记用户中止但进程其实还活着」的假成功。
             res = self.stop(run_id)
             return bool(res.get("ok") and res.get("stop"))
         s.executor.abort(run)
         self.finalize_user_stop(run, "用户中止", "KILLED")
         return True
 
-    # ------------------------------------------------------------------
-    # 停止（含身份核验）
-    # ------------------------------------------------------------------
     def stop(self, run_id: str) -> dict:
         s = self._sched
         run = s.store.get_run(run_id)
@@ -154,9 +124,6 @@ class ProcessController:
             res["orphan_sweep"] = orphan_note
         return res
 
-    # ------------------------------------------------------------------
-    # shell 孤儿清理（按父 pid 精确匹配，不做全局扫描）
-    # ------------------------------------------------------------------
     def sweep_shell_orphans(self, run: Run) -> str:
         if os.name != "nt":
             return ""
@@ -205,9 +172,6 @@ class ProcessController:
         except OSError:
             return False
 
-    # ------------------------------------------------------------------
-    # 用户停止收尾
-    # ------------------------------------------------------------------
     def finalize_user_stop(self, run: Run, reason: str, status: str) -> None:
         s = self._sched
         with s._lock:

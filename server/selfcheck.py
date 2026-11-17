@@ -11,13 +11,11 @@ def main():
     from app.store import Store
     from app.executor import Executor
 
-    # 1) 常量分组齐全（含新增 FILEOP_ACTION / EXECUTER）
     groups = list(constants.ALL_GROUPS)
     expected = ["STATUS", "JOB_TYPE", "TRIGGER", "RESULT", "ENABLED", "FILEOP_ACTION", "EXECUTER"]
     assert groups == expected, groups
     print("[OK] constants groups:", groups)
 
-    # 2) 类型化 params 解析
     prog = Job.from_dict({
         "name": "打开记事本", "type": "script",
         "params": {"path": "scripts/hello.ps1", "detach": True},

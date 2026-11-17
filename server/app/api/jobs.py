@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""任务管理路由（8 个端点）。
-
-GET    /api/jobs                    任务列表（分页 / 类型 / 启用 / 名称搜索 / 排序）
-POST   /api/jobs                    新增任务           → JobService
-PUT    /api/jobs/{name}             更新任务（含改名）  → JobService
-DELETE /api/jobs/{name}             删除任务           → JobService
-POST   /api/jobs/{name}/enable      启用 / 停用         → JobService
-POST   /api/jobs/{name}/trigger     手动触发           → 直接调 Scheduler（run_service 暂缓）
-GET    /api/job-schema              各类型的参数表单结构
-GET    /api/groups                  任务分组元信息
-"""
+"""任务管理路由"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional

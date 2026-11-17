@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""APScheduler 任务注册与注销，以及启动配置加载。
-
-从 scheduler.py 迁出，逻辑逐行保持一致。
-
-状态所有权：
-  jobs / groups / aps / config_path / store 全部由 Scheduler 门面持有。
-  本模块不复制任何业务状态，只通过门面读写。
-
-注意：注册的 cron 回调仍是门面的 self._trigger_job，
-保持与拆分前一致（APScheduler 需要可调用对象，此处传门面方法引用）。
-"""
+"""APScheduler 任务注册与注销，以及启动配置加载。"""
 from __future__ import annotations
 
 import json
@@ -49,9 +39,6 @@ class JobRegistration:
     def __init__(self, sched) -> None:
         self._sched = sched
 
-    # ------------------------------------------------------------------
-    # 配置加载（数据库为空时从 jobs.json 首次迁移）
-    # ------------------------------------------------------------------
     def load_config(self) -> list:
         s = self._sched
         with open(s.config_path, "r", encoding="utf-8") as f:
@@ -102,9 +89,6 @@ class JobRegistration:
             s.store.upsert_jobs(jobs)
         return errors
 
-    # ------------------------------------------------------------------
-    # 批量注册
-    # ------------------------------------------------------------------
     def register_all(self) -> None:
         s = self._sched
         s.aps.remove_all_jobs()
@@ -121,9 +105,6 @@ class JobRegistration:
                 except Exception as e:  # noqa: BLE001
                     logger.error(f"Job[{name}] cron 注册失败: {e}")
 
-    # ------------------------------------------------------------------
-    # 单个注册 / 注销
-    # ------------------------------------------------------------------
     def register_job(self, job: Job) -> None:
         s = self._sched
         try:

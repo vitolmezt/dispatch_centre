@@ -1,14 +1,5 @@
 # -*- coding: utf-8 -*-
-"""服务组路由（7 个端点）。
-
-GET    /api/service-groups             服务组列表     → 直接调 Scheduler（纯查询）
-POST   /api/service-groups             新建服务组     → GroupService
-PUT    /api/service-groups/{name}      更新服务组     → GroupService
-DELETE /api/service-groups/{name}      删除服务组     → GroupService
-GET    /api/service-groups/{name}      服务组详情     → GroupService（收口私有方法访问）
-POST   /api/service-groups/{name}/start  启动整组     → GroupService
-POST   /api/service-groups/{name}/stop   停止整组     → GroupService
-"""
+"""服务组路由（7 个端点）。"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

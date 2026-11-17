@@ -1,22 +1,5 @@
 # -*- coding: utf-8 -*-
-"""服务组业务服务。
 
-承载 6 个接口的业务编排：
-
-  create_group   POST   /api/service-groups
-  update_group   PUT    /api/service-groups/{name}
-  delete_group   DELETE /api/service-groups/{name}
-  get_detail     GET    /api/service-groups/{name}
-  start_group    POST   /api/service-groups/{name}/start
-  stop_group     POST   /api/service-groups/{name}/stop
-
-不在本模块：
-  GET /api/service-groups   纯查询（直接返回列表）→ API 直接调 Scheduler
-
-注意：get_detail 走本层的目的不是转发，而是**收口 API 层对私有方法
-`Scheduler._service_group_view()` 的直接访问**。原实现里 API 层
-直接调用了私有方法，跨越封装边界；由 Service 承接后，API 层不再触碰私有实现。
-"""
 from __future__ import annotations
 
 from fastapi import HTTPException

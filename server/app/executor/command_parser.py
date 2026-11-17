@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""命令解析：shell 判定、argv 构建、脚本解释器前缀。
-
-纯函数集合，无实例状态，可独立单测。
-从 executor.py 迁出，逻辑逐行保持一致。
-"""
+"""命令解析：shell 判定、argv 构建、脚本解释器前缀。"""
 from __future__ import annotations
 
 import os
@@ -75,12 +71,7 @@ def strip_quoted(command: str) -> str:
 
 
 def needs_shell(command: str) -> bool:
-    """判断命令是否必须经由 shell 执行。
 
-    判定依据（与拆分类前完全一致）：
-      1. 引号外存在 shell 语法字符（管道/重定向/串联等）
-      2. 命令首词是 shell 内建命令
-    """
     if not command or not command.strip():
         return False
     bare = strip_quoted(command)

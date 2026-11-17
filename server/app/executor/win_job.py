@@ -1,19 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Windows Job Object 管理。
-
-从 executor.py 迁出，逻辑逐行保持一致。纯 Win32 ctypes 实现。
-
-设计要点（不可更改）：
-  _job_attach 建立**每实例命名 Job**，并显式设置 LimitFlags = 0，
-  即**不启用 KILL_ON_JOB_CLOSE**。这是「任务不依赖调度中心存活」的
-  技术前提——调度中心退出时其 Job 句柄关闭、Job 销毁，但任务进程不受影响。
-  命名 Job 无法跨进程重开（已实测确认），因此 Job 句柄仅在调度中心
-  存活期间用于精确终止整个进程组。
-
-状态所有权：
-  _jobs（run_id → Job 句柄）与 _lock 由 Executor 持有，
-  本模块通过参数接收，不自行维护副本。
-"""
+"""Windows Job Object 管理。"""
 from __future__ import annotations
 
 import os
@@ -67,7 +53,7 @@ def job_attach(run: Run, pid: int, jobs: Dict[str, int], lock: Any) -> bool:
                         ("p3", ctypes.c_size_t), ("p4", ctypes.c_size_t)]
 
         info = _E()
-        info.Basic.LimitFlags = 0  # 关键：不启用 KILL_ON_JOB_CLOSE
+        info.Basic.LimitFlags = 0
         k.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info))
 
         hp = k.OpenProcess(0x1F0FFF, False, int(pid))
@@ -88,7 +74,6 @@ def job_attach(run: Run, pid: int, jobs: Dict[str, int], lock: Any) -> bool:
 
 
 def job_terminate(run_id: str, jobs: Dict[str, int], lock: Any) -> bool:
-    """用 Job 句柄终止整组（仅存活期有效）。"""
     if not is_windows():
         return False
     with lock:
@@ -107,7 +92,6 @@ def job_terminate(run_id: str, jobs: Dict[str, int], lock: Any) -> bool:
 
 
 def job_close(run_id: str, jobs: Dict[str, int], lock: Any) -> None:
-    """释放 Job 句柄。释放后 Job 若已无其他句柄引用即被销毁。"""
     with lock:
         h = jobs.pop(run_id, None)
     if not h:
@@ -120,11 +104,7 @@ def job_close(run_id: str, jobs: Dict[str, int], lock: Any) -> None:
 
 
 def probe_job_environment() -> Dict[str, Optional[bool]]:
-    """探测当前进程所处 Job 的约束情况。
 
-    返回 in_job / kill_on_close / breakaway_allowed / can_escape 四个字段。
-    非 Windows 明确判定为无约束。探测失败不影响主流程。
-    """
     result: Dict[str, Optional[bool]] = {
         "in_job": None, "kill_on_close": None,
         "breakaway_allowed": None, "can_escape": None,
@@ -188,5 +168,5 @@ def probe_job_environment() -> Dict[str, Optional[bool]]:
         result["breakaway_allowed"] = allowed
         result["can_escape"] = (not kill) or allowed
         return result
-    except Exception:  # noqa: BLE001 —— 探测失败不影响主流程
+    except Exception:
         return result

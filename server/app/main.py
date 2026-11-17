@@ -85,16 +85,7 @@ def _shutdown():
         scheduler.shutdown()
 
 
-# 路由聚合 —— 30 个端点
-#   jobs.py     8 ：GET/POST /api/jobs、PUT/DELETE /api/jobs/{name}、
-#                   POST /api/jobs/{name}/enable、POST /api/jobs/{name}/trigger、
-#                   GET /api/job-schema、GET /api/groups
-#   runs.py     6 ：GET /api/running、GET/DELETE /api/history、
-#                   GET /api/runs/{id}、POST /api/runs/{id}/abort、POST /api/runs/{id}/stop
-#   groups.py   7 ：服务组 CRUD + 详情 + start/stop
-#   auth.py     2 ：POST /api/login（公开）、POST /api/logout
-#   system.py   4 ：GET /api/constants、/api/health、/api/config（均公开）、GET /api/audit
-#   events.py   3 ：GET /api/events、GET /api/runs/{id}/stream、POST /api/fs/pick
+# 路由聚合
 app.include_router(api_jobs.router)
 app.include_router(api_runs.router)
 app.include_router(api_groups.router)

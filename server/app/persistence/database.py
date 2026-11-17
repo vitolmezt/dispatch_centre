@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite 连接、锁、事务与 schema 管理。
-
-从 store.py 迁出，逻辑逐行保持一致。
-
-**最关键的部分是 _init_schema 的在线迁移**：
-  老库可能缺少 created_at / job_type 列，必须在启动时用 PRAGMA 检查后
-  ALTER TABLE 补齐。这保证已有 scheduler.db 可直接升级，不丢数据。
-  此逻辑不得改动。
-
-连接与锁由 Database 唯一持有，三个 Repository 共享同一实例。
-"""
+"""SQLite 连接、锁、事务与 schema 管理。"""
 from __future__ import annotations
 
 import os
@@ -19,7 +9,6 @@ from pathlib import Path
 
 
 def heartbeat_batch_sec() -> float:
-    """心跳写库节流秒数（默认 5s）。"""
     try:
         return max(1.0, float(os.environ.get("SC_HEARTBEAT_BATCH_SEC", "5")))
     except (TypeError, ValueError):
@@ -27,7 +16,6 @@ def heartbeat_batch_sec() -> float:
 
 
 class Database:
-    """SQLite 连接管理器：持有连接与锁，供各 Repository 共享。"""
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
@@ -37,9 +25,6 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.init_schema()
 
-    # ------------------------------------------------------------------
-    # schema 初始化 + 在线迁移
-    # ------------------------------------------------------------------
     def init_schema(self) -> None:
         with self.lock:
             c = self.conn.cursor()
@@ -62,7 +47,6 @@ class Database:
                     status TEXT
                 )
             """)
-            # 在线迁移：老库补列
             cols = [r["name"] for r in c.execute("PRAGMA table_info(jobs)").fetchall()]
             if "created_at" not in cols:
                 c.execute("ALTER TABLE jobs ADD COLUMN created_at TEXT")

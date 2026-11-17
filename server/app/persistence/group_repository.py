@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ServiceGroup 数据访问。
-
-从 store.py 迁出，逻辑逐行保持一致。
-连接与锁由共享的 Database 提供。
-"""
+"""ServiceGroup 数据访问。"""
 from __future__ import annotations
 
 import json

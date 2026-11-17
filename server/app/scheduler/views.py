@@ -1,13 +1,5 @@
 # -*- coding: utf-8 -*-
-"""查询视图：任务 / 运行 / 历史 / 分组 / 服务组。
-
-从 scheduler.py 迁出，逻辑逐行保持一致。
-
-全部为**只读查询**，不修改任何状态。
-数据来源统一经门面：
-  jobs / running / service_groups / store —— 均由 Scheduler 持有，本模块不复制。
-加锁亦使用门面的 self._sched._lock。
-"""
+"""查询视图：任务 / 运行 / 历史 / 分组 / 服务组。"""
 from __future__ import annotations
 
 from typing import Dict, List, Optional
@@ -21,9 +13,6 @@ class Views:
     def __init__(self, sched) -> None:
         self._sched = sched
 
-    # ------------------------------------------------------------------
-    # 任务视图
-    # ------------------------------------------------------------------
     def jobs_view(self, *, sort: Optional[str] = None, order: str = "desc") -> List[dict]:
         s = self._sched
         with s._lock:
@@ -69,9 +58,6 @@ class Views:
         out = self._sort_jobs_api(out, sort, order)
         return {"total": total, "items": out[offset:offset + limit]}
 
-    # ------------------------------------------------------------------
-    # 分组视图
-    # ------------------------------------------------------------------
     def groups_view(self) -> List[dict]:
         s = self._sched
         out = []
@@ -80,9 +66,6 @@ class Views:
             out.append({"key": key, **g, "count": count})
         return out
 
-    # ------------------------------------------------------------------
-    # 服务组视图
-    # ------------------------------------------------------------------
     def service_groups_view(self) -> List[dict]:
         s = self._sched
         with s._lock:
@@ -121,9 +104,6 @@ class Views:
         last = self._sched.store.get_runs(limit=1, job_name=job_name)
         return (last[0].to_dict(include_log=False).get("status") if last else None)
 
-    # ------------------------------------------------------------------
-    # 运行中 / 历史
-    # ------------------------------------------------------------------
     def get_running(self, run_id: str):
         s = self._sched
         with s._lock:

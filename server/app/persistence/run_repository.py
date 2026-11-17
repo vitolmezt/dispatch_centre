@@ -1,19 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Run 数据访问。
-
-从 store.py 迁出，逻辑逐行保持一致。
-
-必须保留的兼容逻辑：
-  1. _run_from_row 的兜底：run_json 缺失/损坏时用独立列
-     (id/job_name/job_type/status/started_at/ended_at) 重构 Run
-  2. save_run(heartbeat_only=True) 的心跳写库节流：
-     距上次心跳不足 heartbeat_batch_sec 时只更新内存字段不落库
-  3. running_runs 返回 4 个状态（含 UNKNOWN）
-  4. running_process_count 只算 3 个状态（不含 UNKNOWN，
-     因 UNKNOWN 无法确认进程是否真实存在）
-
-连接与锁由共享的 Database 提供。
-"""
+"""Run 数据访问。"""
 from __future__ import annotations
 
 import json
@@ -29,11 +15,7 @@ class RunRepository:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    # ------------------------------------------------------------------
-    # 行 → Run（含损坏兜底）
-    # ------------------------------------------------------------------
     def run_from_row(self, row) -> Optional[Run]:
-        """从 runs 表一行构造 Run；run_json 缺失/损坏时用独立列兜底。"""
         def _fallback() -> Optional[Run]:
             kwargs = {
                 "id": row["id"],
@@ -60,10 +42,7 @@ class RunRepository:
                 except (TypeError, ValueError):
                     pass
         return _fallback()
-
-    # ------------------------------------------------------------------
-    # 写入
-    # ------------------------------------------------------------------
+    
     def save_run(self, run: Run, heartbeat_only: bool = False) -> None:
         db = self._db
         now = datetime.now(timezone.utc).isoformat()
@@ -94,9 +73,6 @@ class RunRepository:
             )
             db.conn.commit()
 
-    # ------------------------------------------------------------------
-    # 查询
-    # ------------------------------------------------------------------
     def build_query(self, /, status=None, job_name=None, job_type=None,
                     name_like=None, sort=None, order="desc",
                     offset=None, limit=None):
@@ -175,11 +151,7 @@ class RunRepository:
         return self.run_from_row(row)
 
     def recent_runs(self, limit: int = 200) -> List[Run]:
-        """最近若干条 run（含终态），用于状态一致性核对。
 
-        场景：数据库某条记录已被标为终态（如 KILLED），但进程其实还在运行。
-        只查非终态会把这类不一致永久漏掉，所以要连终态一起核对。
-        """
         db = self._db
         sql = "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?"
         with db.lock:
@@ -196,7 +168,6 @@ class RunRepository:
         return [self.run_from_row(r) for r in rows]
 
     def running_process_count(self) -> int:
-        """实际运行进程数：**不含 UNKNOWN**（无法确认是否真实存在）。"""
         db = self._db
         states = ("STARTING", "RUNNING", "ORPHANED")
         sql = "SELECT COUNT(*) FROM runs WHERE status IN ({})".format(
@@ -205,9 +176,6 @@ class RunRepository:
             row = db.conn.execute(sql, tuple(states)).fetchone()
         return row[0] if row else 0
 
-    # ------------------------------------------------------------------
-    # 删除 / 工具
-    # ------------------------------------------------------------------
     def delete_runs(self, ids: List[str]) -> int:
         db = self._db
         ids = [i for i in ids if i]

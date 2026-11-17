@@ -1,23 +1,5 @@
 # -*- coding: utf-8 -*-
-"""认证鉴权边界与业务契约回归。
-
-两部分：
-
-A. 鉴权（security）
-  - 23 个受保护端点未认证一律 401
-  - 公开端点（health/constants）可用；错误凭证登录 401
-  - 登录 -> 访问 -> 登出 -> 会话失效 全链路
-  - 登录失败限流（冷却期内正确凭证也被拒）
-  - SSE（events / run stream）未认证 401，认证后可消费到结束哨兵
-  - fs/pick 无开关，仅需认证
-
-B. 权限模型与业务契约（regression）
-  - 不设路径白名单：FILEOP / SCRIPT / PROGRAM / COMMAND 可作用于任意路径
-  - 非 0 退出 -> INTERRUPTED（而非 FAILED），且用户日志保持干净
-  - 原有接口契约（schema/groups/history/running/CRUD/audit）不变
-
-注意：本文件会把 SC_DB 指向临时库；conftest.py 已在导入 app 前完成设置。
-"""
+"""认证鉴权边界与业务契约回归。"""
 import os
 import sys
 import time
@@ -30,10 +12,8 @@ from app.models import Job, Run
 
 pytestmark = pytest.mark.security
 
-# 与 conftest.py 中设置的值保持一致
 TEST_TOKEN = "test-long-token-1234567890"
 
-# 受保护端点清单：(method, path, 是否危险写操作)
 PROTECTED = [
     ("GET", "/api/jobs", False),
     ("POST", "/api/jobs", False),
@@ -98,21 +78,15 @@ class _FakeRunner:
         pass
 
 
-# ===========================================================================
-# A. 鉴权
-# ===========================================================================
-
 @pytest.mark.parametrize("method,path,danger", PROTECTED,
                          ids=[f"{m} {p}" for m, p, _ in PROTECTED])
 def test_unauthorized_rejected(client, method, path, danger):
-    """所有受保护端点未认证必须返回 401。"""
     p = path.replace("{name}", "x").replace("{id}", "unexistent-run-id")
     r = getattr(client, method.lower())(p)
     assert r.status_code == 401, (method, p, r.status_code, r.text)
 
 
 def test_public_open(client):
-    """health / constants 无需认证；constants 暴露 fsPick 能力；错误凭证登录 401。"""
     for path in ("/api/health", "/api/constants"):
         r = client.get(path)
         assert r.status_code == 200, (path, r.status_code, r.text)
@@ -125,33 +99,27 @@ def test_public_open(client):
 
 
 def test_login_logout_flow(client):
-    """登录 -> 带 token 访问 -> 登出 -> 会话失效。"""
     tok = _login(client)
     assert isinstance(tok, str) and len(tok) > 8
 
     assert client.get("/api/jobs", headers=_auth(tok)).status_code == 200
     assert client.post("/api/logout", headers=_auth(tok)).status_code == 200
-    # 登出后旧 token 必须失效
     assert client.get("/api/jobs", headers=_auth(tok)).status_code == 401
 
 
 def test_dangerous_endpoint_protection(client):
-    """危险端点在认证下可用，未认证被拒。"""
     tok = _login(client)
     h = _auth(tok)
 
     job = {"name": "sec_j1", "type": "COMMAND", "command": "echo hi"}
     assert client.post("/api/jobs", json=job, headers=h).status_code == 200
-    # 允许 200 或 409（正在运行）
     assert client.post("/api/jobs/sec_j1/trigger", headers=h).status_code in (200, 409)
     assert client.post("/api/jobs/sec_j1/trigger").status_code == 401
     assert client.delete("/api/jobs/sec_j1", headers=h).status_code == 200
 
 
 def test_fs_pick_no_switch_authed(client, monkeypatch):
-    """fs/pick 无需开关：认证后 200 可达，未认证 401。"""
-    # 阶段1 重构后 fs_pick 实现位于 app/api/events.py，
-    # 必须 patch 该模块的全局名，patch main 命名空间不会影响调用点解析。
+
     from app.api import events as events_mod
 
     monkeypatch.setattr(
@@ -167,14 +135,12 @@ def test_fs_pick_no_switch_authed(client, monkeypatch):
 
 
 def test_sse_unauthorized(client):
-    """SSE 端点未认证必须 401。"""
     assert client.get("/api/events").status_code == 401
     assert client.get("/api/runs/1/stream").status_code == 401
 
 
 @pytest.mark.slow
 def test_sse_authenticated_finite(auth_client):
-    """带 Bearer 认证的 run 日志 SSE 可消费到结束哨兵（认证握手通过）。"""
     client, h = auth_client
 
     job = {"name": "sse_log_1", "type": "COMMAND", "command": "echo sse-check"}
@@ -183,7 +149,6 @@ def test_sse_authenticated_finite(auth_client):
     assert r.status_code == 200, r.text
     run_id = r.json()["run_id"]
 
-    # 等任务结束
     deadline = time.time() + 15
     done = None
     while time.time() < deadline:
@@ -209,7 +174,6 @@ def test_sse_authenticated_finite(auth_client):
 
 
 def test_login_throttle(client):
-    """连续失败后进入冷却，冷却期内即使正确凭证也被 401。"""
     from app import auth as auth_mod
 
     auth_mod.reset_login_throttle()
@@ -229,12 +193,7 @@ def test_login_throttle(client):
     auth_mod.reset_login_throttle()
 
 
-# ===========================================================================
-# B. 权限模型
-# ===========================================================================
-
 def test_fileop_anywhere(tmp_path):
-    """不设安全根：FILEOP 可删除根外路径、.git 内文件；不存在的文件报明确错误。"""
     from app.executor import Executor
 
     ex = Executor(_FakeRunner())
@@ -245,7 +204,6 @@ def test_fileop_anywhere(tmp_path):
         p.write_text("x", encoding="utf-8")
         return str(p)
 
-    # 1) 根外普通文件
     outside = _mk("outside_anywhere.txt")
     r1 = Run(id="fp1", job_name="t", job_type="FILEOP", status="PENDING")
     ex.run(r1, Job.from_dict({"name": "t", "type": "FILEOP",
@@ -254,7 +212,6 @@ def test_fileop_anywhere(tmp_path):
     assert r1.status == "SUCCEEDED", r1.status
     assert not os.path.exists(outside)
 
-    # 2) .git 目录内文件
     git_file = _mk(".git/objects/x")
     r2 = Run(id="fp2", job_name="t", job_type="FILEOP", status="PENDING")
     ex.run(r2, Job.from_dict({"name": "t", "type": "FILEOP",
@@ -263,7 +220,6 @@ def test_fileop_anywhere(tmp_path):
     assert r2.status == "SUCCEEDED", r2.status
     assert not os.path.exists(git_file)
 
-    # 3) 数据目录风格路径
     data_file = _mk("server_data_style/d.txt")
     r3 = Run(id="fp3", job_name="t", job_type="FILEOP", status="PENDING")
     ex.run(r3, Job.from_dict({"name": "t", "type": "FILEOP",
@@ -272,7 +228,6 @@ def test_fileop_anywhere(tmp_path):
     assert r3.status == "SUCCEEDED", r3.status
     assert not os.path.exists(data_file)
 
-    # 4) 目标不存在 -> FAILED 且原因是「不存在」而非安全根拒绝
     r4 = Run(id="fp4", job_name="t", job_type="FILEOP", status="PENDING")
     ex.run(r4, Job.from_dict({"name": "t", "type": "FILEOP",
                               "params": {"action": "delete_file",
@@ -287,7 +242,6 @@ def test_script_program_outside_exec_root(tmp_path):
 
     ex = Executor(_FakeRunner())
 
-    # PROGRAM：直接跑 python 解释器
     r1 = Run(id="prg1", job_name="t", job_type="PROGRAM", status="PENDING")
     ex.run(r1, Job.from_dict({"name": "t", "type": "PROGRAM",
                               "params": {"path": sys.executable,
@@ -295,7 +249,6 @@ def test_script_program_outside_exec_root(tmp_path):
     assert r1.status == "SUCCEEDED", (r1.status, r1.error)
     assert r1.exit_code == 0, r1.exit_code
 
-    # SCRIPT：执行根外的脚本文件
     out_script = tmp_path / "outside_root.ps1"
     out_script.write_text("Write-Output root-outside-ok", encoding="utf-8")
     r2 = Run(id="scr1", job_name="t", job_type="SCRIPT", status="PENDING")
@@ -303,7 +256,6 @@ def test_script_program_outside_exec_root(tmp_path):
                               "params": {"path": str(out_script), "args": []}}))
     assert r2.status == "SUCCEEDED", (r2.status, r2.error)
 
-    # COMMAND：不受限
     r3 = Run(id="cmd1", job_name="t", job_type="COMMAND", status="PENDING")
     ex.run(r3, Job.from_dict({"name": "t", "type": "COMMAND",
                               "params": {"command": "echo cmd-ok"}}))
@@ -311,11 +263,7 @@ def test_script_program_outside_exec_root(tmp_path):
 
 
 def test_nonzero_exit_interrupted():
-    """非 0 退出 -> INTERRUPTED（不是 FAILED）。
 
-    FAILED 仅用于引擎自身异常（进程未真正启动、无退出码）。
-    同时校验错误文案可解释，且内部诊断信息不污染用户日志。
-    """
     from app.executor import Executor
 
     ex = Executor(_FakeRunner())
@@ -329,17 +277,11 @@ def test_nonzero_exit_interrupted():
     assert r.status == "INTERRUPTED", (r.status, r.error)
     assert "退出码" in r.error and r.error.startswith(f"退出码 {r.exit_code}"), r.error
     assert "外部终止或异常退出" in r.error, r.error
-    # 用户日志里不应出现内部身份诊断前缀
     assert not any("[identity]" in ln for ln in (r.log or [])), r.log
 
 
-# ===========================================================================
-# B. 原有功能契约回归
-# ===========================================================================
-
 @pytest.mark.regression
 def test_original_features_regression(auth_client):
-    """schema/groups/history/running/任务 CRUD/审计 在认证后契约不变。"""
     client, h = auth_client
 
     r = client.get("/api/job-schema", headers=h)
@@ -352,7 +294,6 @@ def test_original_features_regression(auth_client):
 
     assert client.get("/api/running", headers=h).status_code == 200
 
-    # CRUD
     job = {"name": "reg_1", "type": "COMMAND", "command": "echo ok"}
     assert client.post("/api/jobs", json=job, headers=h).status_code == 200
 

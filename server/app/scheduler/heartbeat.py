@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""心跳管理与超时检测。
-
-从 scheduler.py 迁出，逻辑逐行保持一致。
-
-核心原则（不可更改）：
-  **心跳超时绝不单独判定进程死亡**，必须由 OS 探针（identity.process_is_alive）
-  实测确认。心跳仅作活性参考。
-
-状态所有权：
-  running / store / heartbeat_interval / _heartbeat_stop 全部由 Scheduler 门面持有。
-  本模块不复制任何业务状态，只通过门面读写。
-"""
+"""心跳管理与超时检测。"""
 from __future__ import annotations
 
 import logging
@@ -24,19 +13,13 @@ logger = logging.getLogger("scheduler")
 
 
 class HeartbeatMonitor:
-    """心跳循环、超时检测与状态收敛。"""
-
     def __init__(self, sched) -> None:
         self._sched = sched
 
     def _timeout_times(self) -> int:
-        """超时倍数：复用 core 的模块级实现，避免重复读取配置。"""
         from .core import _heartbeat_timeout_times
         return _heartbeat_timeout_times()
 
-    # ------------------------------------------------------------------
-    # 循环
-    # ------------------------------------------------------------------
     def loop(self) -> None:
         s = self._sched
         while not s._heartbeat_stop:
@@ -55,7 +38,6 @@ class HeartbeatMonitor:
         managed = [r for r in runs
                    if r.status in ("RUNNING", "ORPHANED", "STARTING")]
         now_s = datetime.now().astimezone().isoformat(timespec="seconds")
-        # 超时倍数复用 core 的模块级函数，避免重复实现配置读取
         timeout_sec = s.heartbeat_interval * self._timeout_times()
 
         for r in managed:
@@ -64,10 +46,6 @@ class HeartbeatMonitor:
             hb = r.last_heartbeat or r.start
             if not self.within_timeout(hb, timeout_sec):
                 self.check_timeout(r)
-
-    # ------------------------------------------------------------------
-    # 超时判定
-    # ------------------------------------------------------------------
     @staticmethod
     def within_timeout(ts, timeout_sec: float) -> bool:
         try:
@@ -78,10 +56,6 @@ class HeartbeatMonitor:
             return False
 
     def check_timeout(self, run: Run) -> None:
-        """检查单个 run 是否因心跳超时且确认死亡而需要收敛为 INTERRUPTED。
-
-        关键：探针存活则刷新心跳并直接返回，绝不判死。
-        """
         s = self._sched
         if identity_mod.process_is_alive(run, run.pid):
             run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")

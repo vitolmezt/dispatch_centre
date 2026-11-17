@@ -20,7 +20,6 @@ from . import timeout as timeout_mod
 from . import win_job
 
 _IO_ENCODING = locale.getpreferredencoding(False) or "utf-8"
-# 把平台 IO 编码注入 process_manager（Windows 下 tasklist 输出解码用）
 process_manager.configure(_IO_ENCODING)
 
 
@@ -35,7 +34,6 @@ class Executor:
         self._lock = threading.Lock()
 
     def mark_user_stopped(self, run_id: str):
-        """记录该 run 是"用户主动停止/中止"，之后的读线程不得用退出码覆盖其状态."""
         with self._lock:
             self._user_stopped.add(run_id)
 
@@ -48,7 +46,7 @@ class Executor:
 
         base = (getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
-        return [base | 0x01000000, base]  # 先带 CREATE_BREAKAWAY_FROM_JOB
+        return [base | 0x01000000, base]
 
     # 父 Job 相关常量
     _KILL_ON_JOB_CLOSE = 0x00002000
@@ -82,13 +80,13 @@ class Executor:
         return run.log_path
 
     def _spawn(self, argv: List[str], logf, cwd_env, env, detach: bool):
-        """启动子进程（实现在 process_manager）。"""
+        """启动子进程"""
         return process_manager.spawn(
             argv, logf, cwd_env, env, detach, Executor._detach_flags_variants())
 
     @staticmethod
     def _warn_isolation(envprobe: Dict[str, Optional[bool]]):
-        """把 Job 隔离缺失告警打到日志（每次启动只提示一次足够）。"""
+        """把 Job 隔离缺失告警打到日志"""
         import logging
         logging.getLogger("scheduler").warning(
             "detach 任务未能获得 Job 级隔离：in_job=%s kill_on_job_close=%s "
@@ -98,11 +96,11 @@ class Executor:
 
 
     def _job_attach(self, run: Run, pid: int) -> bool:
-        """为运行实例建立命名 Job 并把进程收入（实现在 win_job）。"""
+        """为运行实例建立命名 Job 并把进程收入"""
         return win_job.job_attach(run, pid, self._jobs, self._lock)
 
     def _job_terminate(self, run_id: str) -> bool:
-        """用 Job 句柄终止整组（仅存活期有效）。"""
+        """用 Job 句柄终止整组"""
         return win_job.job_terminate(run_id, self._jobs, self._lock)
 
     def _job_close(self, run_id: str):
@@ -113,7 +111,6 @@ class Executor:
     def _is_windows() -> bool:
         return win_job.is_windows()
 
-    # 保留类属性以兼容外部引用（如测试/文档），实际逻辑在 command_parser
     _SHELL_HINTS = command_parser.SHELL_HINTS
     _SHELL_BUILTINS = command_parser.SHELL_BUILTINS
 
@@ -141,11 +138,9 @@ class Executor:
         return file_operations.run_fileop(job, run, self.runner)
 
     def run(self, run: Run, job: Job):
-        """启动子进程（或执行文件操作），更新 run 状态。在独立线程中调用."""
         return self._run_local(run, job)
 
     def _run_local(self, run: Run, job: Job):
-        """原有的进程内执行方式（FILEOP 或禁用 Host 时使用）。"""
         run.status = "RUNNING"
         run.start = _now_local()
         run.pid = None
@@ -187,10 +182,6 @@ class Executor:
                         "该任务可能被连带终止。建议改用 run_headless.py 启动调度中心。")
                     self._warn_isolation(envprobe)
 
-            # 为该运行实例建立命名 Job（不设 KILL_ON_JOB_CLOSE）：
-            # 仅在调度中心存活期间用于精确终止整个进程组。
-            # 调度中心退出时该 Job 句柄随之关闭、Job 销毁，但任务进程不受影响，
-            # 因此任务不依赖调度中心存活（命名 Job 无法跨进程重开，实测确认）。
             self._job_attach(run, proc.pid)
 
             run.detached = detach

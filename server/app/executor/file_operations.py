@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FILEOP 文件操作实现。
-
-从 executor.py 迁出，逻辑逐行保持一致。
-依赖由调用方注入 runner（用于写执行日志），不自行持有状态。
-"""
+"""FILEOP 文件操作实现。"""
 from __future__ import annotations
 
 import shutil
@@ -14,11 +10,7 @@ from ..models import Job, Run
 
 
 def run_fileop(job: Job, run: Run, runner: Any) -> bool:
-    """执行 FILEOP 动作。
-
-    action 取值：DELETE_FILE / DELETE_DIR / COPY / MOVE
-    失败时抛异常，由调用方转换为 FAILED 状态。
-    """
+    
     action = str(job.params.get("action", "")).strip().upper()
     source = job.params.get("source", "")
     target = job.params.get("target", "")

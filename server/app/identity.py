@@ -75,7 +75,6 @@ def _linux_starttime(pid: int) -> Optional[str]:
 
 
 def get_executable_path(pid: int) -> Optional[str]:
-    """可执行文件绝对路径（辅助佐证；Windows 用 QueryFullProcessImageNameW）."""
     try:
         pid = int(pid)
         if IS_WINDOWS:
@@ -100,7 +99,6 @@ def get_executable_path(pid: int) -> Optional[str]:
 
 
 def command_line_fingerprint(cmdline: Optional[List[str]]) -> Optional[str]:
-    """把 argv 列表做成指纹（辅助佐证）. 空输入返回 None."""
     if not cmdline:
         return None
     joined = "\x00".join(str(c) for c in cmdline)
@@ -108,7 +106,6 @@ def command_line_fingerprint(cmdline: Optional[List[str]]) -> Optional[str]:
 
 
 def read_process_group_id(pid: int) -> Optional[int]:
-    """读取真实进程组/进程树根 pid 以供佐证（不做“==界= pid”假设）."""
     try:
         pid = int(pid)
         if IS_WINDOWS:
@@ -189,7 +186,6 @@ def _os_alive_probe(pid: int, identity: Dict[str, Optional[object]]) -> bool:
 
 
 def process_is_alive(run, pid: Optional[int] = None) -> bool:
-    """外部便捷入口：用已落库的身份凭据校验进程是否存活."""
     pid = pid if pid is not None else run.pid
     if not pid:
         return False
@@ -202,7 +198,6 @@ def process_is_alive(run, pid: Optional[int] = None) -> bool:
 
 
 def verify_identity(run, pid: Optional[int] = None) -> bool:
-    """身份核验：pid 对应的进程是否就是 run 记录的那个进程（零容忍）。"""
     pid = pid if pid is not None else run.pid
     if not pid:
         return False
@@ -254,10 +249,8 @@ def _win_safe_kill(run, pid: int, group_id: Optional[int]) -> Optional[str]:
 
 
 def _posix_safe_kill(run, pid: int, group_id: Optional[int]) -> Optional[str]:
-    """POSIX：优先 pidfd 单发；否则进程组(os.killpg)杀死组长后成员复核。"""
     if not verify_identity(run, pid):
         return "身份核验失败（POSIX），拒绝终止"
-    # 尝试 pidfd
     fd = None
     try:
         if hasattr(os, "pidfd_open"):
