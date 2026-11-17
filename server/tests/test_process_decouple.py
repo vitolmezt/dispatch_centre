@@ -373,19 +373,24 @@ def test_instance_job_no_kill_on_close():
 
     此项保留源码断言而非改行为测试，原因：验证它需要真实创建 Job 对象
     并查询 LimitFlags；源码断言更直接。
-    阶段2 拆分后该实现位于 executor/core.py（尚未拆到 win_job.py），
-    因此按「先找包内文件，再回退旧路径」读取，兼容两种布局。
+    该实现在阶段2 拆分中从 executor.py → executor/core.py → executor/win_job.py，
+    因此按「最具体的文件优先」探测，兼容各阶段布局。
     """
-    for candidate in ("executor/core.py", "executor/win_job.py", "executor.py"):
-        if (APP_DIR / candidate).exists():
-            src = _read_src(candidate)
+    for candidate in ("executor/win_job.py", "executor/core.py", "executor.py"):
+        path = APP_DIR / candidate
+        if path.exists() and "_job_attach" in path.read_text(encoding="utf-8"):
+            src = path.read_text(encoding="utf-8")
             break
     else:
-        raise AssertionError("找不到 executor 实现文件")
+        raise AssertionError("找不到含 _job_attach 的 executor 实现文件")
 
-    assert "_job_attach" in src, "缺少每实例 Job 建立逻辑"
+    assert "_job_attach" in src or "def job_attach" in src, "缺少每实例 Job 建立逻辑"
     assert "info.Basic.LimitFlags = 0" in src, "Job 未显式清零 LimitFlags"
-    seg = src.split("def _job_attach")[1].split("def _job_terminate")[0]
+    # 取 job_attach 方法体（到下一个同级 def 为止），确认其间不含 KILL_ON_JOB_CLOSE 常量
+    marker = "def _job_attach" if "def _job_attach" in src else "def job_attach"
+    tail = src.split(marker, 1)[1]
+    nxt = tail.find("\ndef ")
+    seg = tail[:nxt] if nxt > 0 else tail
     assert "0x00002000" not in seg, "Job 建立处出现了 KILL_ON_JOB_CLOSE 常量"
 
 
