@@ -106,21 +106,9 @@ def _create_and_run(port: int, extra_env: dict) -> bool:
     """创建计划任务并以 pythonw 启动 run.py。"""
     py = _pythonw()
     run_py = SERVER_DIR / "run.py"
-
-    # 计划任务无法直接设置环境变量，用 boot.py 引导：
-    # 设置环境后以 runpy 执行 run.py。
-    #
-    # 关键 1：pythonw.exe 没有控制台，sys.stdout/sys.stderr 为 None，
-    #         uvicorn 的访问日志和错误会全部丢失，所以这里重定向到文件。
-    # 关键 2：访问日志会随请求持续增长（实测约 73 字节/请求，
-    #         前端每秒轮询时约 6MB/天）。若长期不重启会无限膨胀，
-    #         因此使用按大小轮转的写入器：单文件超过阈值即切分，
-    #         只保留最近 N 份，总量恒定。
     boot_file = RUN_DIR / "boot.py"
     boot_file.write_text(
         "import os, runpy, sys\n"
-        # runpy.run_path 不会把脚本目录加入 sys.path，
-        # 必须显式插入并切换工作目录，否则 `app` 包无法导入。
         f"sys.path.insert(0, r'{SERVER_DIR}')\n"
         f"os.chdir(r'{SERVER_DIR}')\n"
         "\n"
@@ -278,9 +266,6 @@ def stop() -> int:
             subprocess.run(["taskkill", "/F", "/PID", str(p)],
                            capture_output=True)
     STATUS_FILE.unlink(missing_ok=True)
-    # 日志大小已由轮转机制控制（单文件上限 + 保留份数），
-    # 这里不再搬移文件，只清理早期版本遗留的
-    # server_<时间戳>.log 归档，避免新旧两套策略叠加堆积。
     removed = 0
     for old in RUN_DIR.glob("server_[0-9]*-[0-9]*.log"):
         try:
@@ -329,11 +314,6 @@ def _log_files() -> list:
 
 
 def logs(follow: bool = False, lines: int = 100) -> int:
-    """查看调度中心运行日志（等价于前台运行时终端里的输出）。
-
-    轮转后内容分散在 server_stdout.log 与 .1/.2/.3 中，
-    这里按时间顺序拼接后取尾部，保证切换文件时上下文连续。
-    """
     files = _log_files()
     if not files:
         print(f"日志文件尚无内容: {STDOUT_LOG}")
