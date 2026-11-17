@@ -150,10 +150,12 @@ def test_dangerous_endpoint_protection(client):
 
 def test_fs_pick_no_switch_authed(client, monkeypatch):
     """fs/pick 无需开关：认证后 200 可达，未认证 401。"""
-    from app import main as main_mod
+    # 阶段1 重构后 fs_pick 实现位于 app/api/events.py，
+    # 必须 patch 该模块的全局名，patch main 命名空间不会影响调用点解析。
+    from app.api import events as events_mod
 
     monkeypatch.setattr(
-        main_mod, "_run_native_picker",
+        events_mod, "_run_native_picker",
         lambda kind, title, initial, out: out.put({"ok": True, "path": "/tmp/fake.txt"}))
 
     tok = _login(client)
