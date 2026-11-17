@@ -8,23 +8,98 @@
 
 ---
 
-## 快速开始
+## 启动
 
-```powershell
-# 后端（推荐：任务可独立存活）
+前后端分别启动。后端提供 API 与执行能力，前端是管理界面。
+
+### 后端
+
+```bash
 cd server
-pip install -r requirements.txt
-python run_headless.py
-
-# 前端
-cd web
-npm install
-npm run dev
+pip install -r requirements.txt   # 首次需装依赖（含 fastapi / uvicorn / apscheduler / pytest）
+python run.py                     # 启动在 http://0.0.0.0:8000
 ```
 
-访问 `http://127.0.0.1:5173`，用管理凭证登录（默认存于 `server/data/sc_token`）。
+启动后可用的地址：
 
-> **为什么推荐 `run_headless.py`**：它通过计划任务让调度中心脱离终端/IDE 的受限 Job Object，关闭终端不会连带杀死任务。`python run.py` 仅适合开发调试。
+| 地址 | 用途 |
+|---|---|
+| `http://127.0.0.1:8000/docs` | **Swagger UI**，可展开每个接口试调用（受保护接口需手动填 Authorization 头） |
+| `http://127.0.0.1:8000/redoc` | ReDoc 文档（阅读版） |
+| `http://127.0.0.1:8000/openapi.json` | OpenAPI 规范（可导入 Postman / Apifox） |
+| `http://127.0.0.1:8000/api/health` | 健康检查（无需认证） |
+
+启动方式有两种：
+
+| 方式 | 命令 | 特点 | 适用 |
+|---|---|---|---|
+| **推荐** | `python run_headless.py` | 计划任务方式，后台静默，**关闭终端/IDE 不影响任务** | 日常使用 |
+| 开发 | `python run.py` | 前台运行，终端可见实时访问日志；**关终端会连带杀死任务** | 调试 |
+
+`run_headless.py` 附加命令：
+
+```powershell
+python run_headless.py --status       # 查看运行状态
+python run_headless.py --logs         # 查看运行日志（最近 100 行）
+python run_headless.py --logs -f      # 实时跟踪日志
+python run_headless.py --logs -n 500  # 指定行数
+python run_headless.py --port 8888    # 指定端口（默认 8000）
+python run_headless.py --stop         # 停止
+```
+
+> **为什么推荐 `run_headless.py`**：Windows 上从终端/IDE 启动的进程会处于宿主的 Job Object 中，若该 Job 带 `KILL_ON_JOB_CLOSE`，宿主退出会连带杀死其派生进程——也就是你的任务。`run_headless.py` 通过计划任务让调度中心脱离这个受限 Job。
+
+### 前端
+
+```bash
+cd web
+npm install        # 首次需装依赖
+npm run dev        # 启动在 http://127.0.0.1:5173
+```
+
+开发时由 vite 把 `/api` 代理到后端 `127.0.0.1:8000`（见 `web/vite.config.js`），浏览器直接打开 `http://127.0.0.1:5173` 即可。
+
+生产构建：
+
+```bash
+npm run build      # 产物输出到 web/dist
+```
+
+### 首次登录
+
+打开前端会跳转登录页，需输入**管理凭证**（长期令牌）。
+
+凭证来源优先级：`SC_TOKEN` 环境变量 → `SC_TOKEN_FILE` 指定文件 → 默认 `server/data/sc_token` → `SC_AUTO_GEN_TOKEN=1` 时自动生成。
+
+若 `server/data/sc_token` 不存在，用以下任一方式生成：
+
+```powershell
+# 方式一：让服务自动生成（首次启动时）
+$env:SC_AUTO_GEN_TOKEN="1"; python run.py
+
+# 方式二：手动生成并写入
+python -c "import secrets,pathlib; p=pathlib.Path('data/sc_token'); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(secrets.token_urlsafe(32)); print(p.read_text())"
+```
+
+登录后拿到的是**短期会话 token**（默认 12 小时有效）。服务重启后内存会话清空，需重新登录。
+
+### 用 curl 调接口
+
+接口需在请求头带 `Authorization: Bearer <会话token>`。先登录取 token：
+
+```bash
+# 1. 用长期凭证换取会话 token
+curl -X POST http://127.0.0.1:8000/api/login \
+     -H "Content-Type: application/json" \
+     -d "{\"token\":\"你的长期凭证\"}"
+
+# 返回：{"token":"xxx","expires_in":43200,"configured":true}
+
+# 2. 带 token 访问业务接口
+curl http://127.0.0.1:8000/api/jobs -H "Authorization: Bearer xxx"
+```
+
+> **注意**：`/docs` 页面上没有 Authorize 按钮（接口鉴权由 FastAPI 依赖实现，未在 OpenAPI 中声明 security scheme）。因此在 Swagger 里试调用受保护接口时，需要手动在请求头里填 `Authorization: Bearer <token>`；或者直接用上面的 curl 方式。
 
 ---
 
