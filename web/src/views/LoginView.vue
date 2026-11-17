@@ -40,7 +40,7 @@ async function onSubmit() {
     <!-- 左侧品牌区 -->
     <section class="brand-panel" aria-label="调度中心品牌介绍">
       <header class="brand-header">
-        <div class="logo">S</div>
+        <img class="logo" src="../assets/logo.png" alt="调度中心" />
         <div>
           <div class="brand-name">调度中心</div>
           <div class="brand-en">SCHEDULER CENTER</div>
@@ -112,7 +112,7 @@ async function onSubmit() {
     <section class="form-panel" aria-label="管理凭证登录">
       <div class="login-card">
         <div class="mobile-brand">
-          <div class="logo">S</div>
+          <img class="logo" src="../assets/logo.png" alt="调度中心" />
           <div>
             <div class="brand-name">调度中心</div>
             <div class="brand-en">SCHEDULER CENTER</div>
@@ -237,11 +237,9 @@ async function onSubmit() {
 .brand-header { display: flex; align-items: center; gap: 13px; }
 .logo {
   width: 42px; height: 42px; flex: 0 0 42px;
-  display: grid; place-items: center;
+  display: block; object-fit: contain;
   border-radius: 11px;
-  color: white; font-size: 22px; font-weight: 750;
-  background: linear-gradient(145deg, #3979ff, #2056df);
-  box-shadow: 0 7px 20px rgba(30,91,231,.28);
+  filter: drop-shadow(0 4px 10px rgba(30, 91, 231, .22));
 }
 .brand-name { font-size: 17px; font-weight: 650; letter-spacing: .3px; }
 .brand-en { margin-top: 4px; color: #8192ad; font-size: 10px; letter-spacing: 2px; }
@@ -351,7 +349,7 @@ async function onSubmit() {
   .form-panel { min-height: 100svh; padding: 34px 25px; }
   .login-card { width: min(410px, 100%); }
   .mobile-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 58px; }
-  .mobile-brand .logo { width: 38px; height: 38px; flex-basis: 38px; font-size: 20px; }
+  .mobile-brand .logo { width: 38px; height: 38px; flex-basis: 38px; }
   .mobile-brand .brand-name { color: #1c2b43; }
   .mobile-brand .brand-en { color: #9aa6b7; }
   .card-heading { margin-bottom: 32px; }
