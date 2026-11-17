@@ -19,6 +19,7 @@ from ..models import Job, Run, job_to_api, ServiceGroup
 from ..store import Store
 from .events import EventBus
 from .log_manager import LogManager
+from .views import Views
 
 logger = logging.getLogger("scheduler")
 
@@ -83,6 +84,7 @@ class Scheduler:
         # 订阅队列随子模块迁移：EventBus._subscribers / LogManager._log_subscribers
         self._events = EventBus(self)
         self._logs = LogManager(self)
+        self._views = Views(self)
 
         self.aps = BackgroundScheduler()
         self.aps.add_listener(self._job_listener)
@@ -733,90 +735,28 @@ class Scheduler:
         except Exception:
             pass
 
+    # ---- 任务 / 分组 / 服务组 视图（实现在 views）----
     def jobs_view(self, *, sort: Optional[str] = None, order: str = "desc") -> List[dict]:
-        with self._lock:
-            items = []
-            for job in self.jobs.values():
-                running_count = sum(1 for r in self.running.values() if r.job_name == job.name)
-                last = self.store.get_runs(limit=1, job_name=job.name)
-                last_run = last[0] if last else None
-                items.append(job_to_api(job, running_count, last_run, running_count > 0))
-        return self._sort_jobs_api(items, sort, order)
-
-    def _sort_jobs_api(self, items: List[dict], sort: Optional[str], order: str) -> List[dict]:
-        field = sort if sort in ("created_at", "name") else "created_at"
-        reverse = order != "asc"
-        if field == "name":
-            items.sort(key=lambda d: (d.get("name") or ""), reverse=reverse)
-        else:
-            items.sort(key=lambda d: (d.get("created_at") or d.get("updated_at") or ""), reverse=reverse)
-        return items
+        return self._views.jobs_view(sort=sort, order=order)
 
     def jobs_search(self, *, job_type: Optional[str] = None, enabled: Optional[str] = None,
                     q: Optional[str] = None, sort: Optional[str] = None, order: str = "desc",
                     offset: int = 0, limit: int = 50) -> dict:
-        with self._lock:
-            filtered = list(self.jobs.values())
-        if job_type:
-            filtered = [j for j in filtered if j.type.upper() == job_type.upper()]
-        if enabled is not None and enabled != "":
-            want = str(enabled).upper() in ("1", "YES", "ON", "TRUE")
-            filtered = [j for j in filtered if j.enabled == want]
-        if q:
-            lq = q.lower()
-            filtered = [j for j in filtered if lq in j.name.lower()]
-        total = len(filtered)
-        out = []
-        for job in filtered:
-            running_count = sum(1 for r in self.running.values() if r.job_name == job.name)
-            last = self.store.get_runs(limit=1, job_name=job.name)
-            last_run = last[0] if last else None
-            out.append(job_to_api(job, running_count, last_run, running_count > 0))
-        out = self._sort_jobs_api(out, sort, order)
-        return {"total": total, "items": out[offset:offset + limit]}
+        return self._views.jobs_search(job_type=job_type, enabled=enabled, q=q,
+                                       sort=sort, order=order,
+                                       offset=offset, limit=limit)
 
     def groups_view(self) -> List[dict]:
-        out = []
-        for key, g in self.groups.items():
-            count = sum(1 for j in self.jobs.values() if j.group == key)
-            out.append({"key": key, **g, "count": count})
-        return out
+        return self._views.groups_view()
 
     def service_groups_view(self) -> List[dict]:
-        with self._lock:
-            groups = list(self.service_groups.values())
-        return [self._service_group_view(g) for g in groups]
+        return self._views.service_groups_view()
 
     def _service_group_view(self, group: ServiceGroup) -> dict:
-        with self._lock:
-            members = []
-            for m in sorted(group.members, key=lambda x: int(x.get("order", 0))):
-                jn = str(m.get("job_name") or "")
-                job = self.jobs.get(jn)
-                run = next((r for r in self.running.values()
-                            if r.job_name == jn and r.status == "RUNNING"), None)
-                members.append({
-                    "job_name": jn,
-                    "label": m.get("label") or jn,
-                    "order": int(m.get("order", 0)),
-                    "exists": job is not None,
-                    "run_id": run.id if run else None,
-                    "status": run.status if run else "STOPPED",
-                    "pid": run.pid if run else None,
-                    "start": run.start if run else None,
-                    "last": self._group_member_last(jn),
-                })
-        return {
-            "name": group.name,
-            "description": group.description,
-            "created_at": group.created_at,
-            "members": members,
-            "running": any(m["status"] == "RUNNING" for m in members),
-        }
+        return self._views.service_group_view(group)
 
     def _group_member_last(self, job_name: str) -> Optional[dict]:
-        last = self.store.get_runs(limit=1, job_name=job_name)
-        return (last[0].to_dict(include_log=False).get("status") if last else None)
+        return self._views._group_member_last(job_name)
 
     def add_service_group(self, group: ServiceGroup):
         with self._lock:
@@ -887,20 +827,11 @@ class Scheduler:
         return {"ok": not errors, "name": name, "stopped": stopped, "errors": errors}
 
     def get_running(self, run_id: str):
-        with self._lock:
-            return self.running.get(run_id)
+        return self._views.get_running(run_id)
 
     def read_log_file(self, run_id: str) -> Optional[List[str]]:
-        if not self._logs_dir:
-            return None
-        path = self._logs_dir / f"{run_id}.log"
-        try:
-            if not path.exists():
-                return None
-            with path.open("r", encoding="utf-8", errors="replace") as f:
-                return f.read().splitlines()
-        except Exception:
-            return None
+        # 实现在 log_manager（此处保留方法名以兼容既有调用）
+        return self._logs.read_log_file(run_id)
 
     def _sort_key(self, obj, field: str):
         v = getattr(obj, field, None)
@@ -908,43 +839,26 @@ class Scheduler:
             return ""
         return v
 
+    # ---- 运行中 / 历史 视图（实现在 views）----
     def running_view(self, *, job_type: Optional[str] = None, q: Optional[str] = None,
                      status: Optional[str] = None,
                      sort: Optional[str] = None, order: str = "desc",
                      offset: int = 0, limit: int = 100) -> dict:
-        runs = list(self.store.running_runs())
-        if status:
-            status = status.strip().upper()
-            runs = [r for r in runs if r.status.upper() == status]
-        if job_type:
-            runs = [r for r in runs if r.job_type.upper() == job_type.upper()]
-        if q:
-            lq = q.lower()
-            runs = [r for r in runs if lq in r.job_name.lower()]
-        field = sort if sort in ("start", "name_created", "name") else "start"
-        attr = {"start": "start", "name": "job_name"}.get(field, "start")
-        runs.sort(key=lambda r: self._sort_key(r, attr), reverse=(order != "asc"))
-        total = len(runs)
-        sliced = runs[offset:offset + limit]
-        counts: Dict[str, int] = {}
-        for r in runs:
-            counts[r.status] = counts.get(r.status, 0) + 1
-        return {
-            "total": total,
-            "items": [r.to_dict(include_log=True) for r in sliced],
-            "alive_total": self.store.running_process_count(),
-            "counts": counts,
-        }
+        return self._views.running_view(job_type=job_type, q=q, status=status,
+                                        sort=sort, order=order,
+                                        offset=offset, limit=limit)
 
     def history_view(self, status: Optional[str] = None, job_name: Optional[str] = None,
                      job_type: Optional[str] = None, q: Optional[str] = None,
                      sort: Optional[str] = None, order: str = "desc",
                      offset: int = 0, limit: int = 50) -> dict:
-        total = self.store.count_runs(status=status, job_name=job_name, job_type=job_type, name_like=q)
-        runs = self.store.query_runs(status=status, job_name=job_name, job_type=job_type,
-                                     name_like=q, sort=sort, order=order, offset=offset, limit=limit)
-        return {"total": total, "items": [r.to_dict(include_log=True) for r in runs]}
+        return self._views.history_view(status=status, job_name=job_name, job_type=job_type,
+                                        q=q, sort=sort, order=order,
+                                        offset=offset, limit=limit)
 
+    @staticmethod
+    def _sort_key(obj, field: str):
+        return Views._sort_key(obj, field)
 
 def _strip_json_comments(text: str) -> str:
     import re
