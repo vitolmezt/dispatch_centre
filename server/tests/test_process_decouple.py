@@ -285,13 +285,17 @@ def test_shell_orphan_sweep_on_stop(sched, monkeypatch):
 @pytest.mark.source_contract
 def test_instance_job_no_kill_on_close():
 
+    # 探测条件须同时接受两种命名：早期的 _job_attach 与拆分后的 job_attach
     for candidate in ("executor/win_job.py", "executor/core.py", "executor.py"):
         path = APP_DIR / candidate
-        if path.exists() and "_job_attach" in path.read_text(encoding="utf-8"):
-            src = path.read_text(encoding="utf-8")
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "def job_attach" in text or "def _job_attach" in text:
+            src = text
             break
     else:
-        raise AssertionError("找不到含 _job_attach 的 executor 实现文件")
+        raise AssertionError("找不到含 job_attach 实现的 executor 文件")
 
     assert "_job_attach" in src or "def job_attach" in src, "缺少每实例 Job 建立逻辑"
     assert "info.Basic.LimitFlags = 0" in src, "Job 未显式清零 LimitFlags"
