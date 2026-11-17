@@ -265,14 +265,27 @@ def test_real_process_writes_log_file(tmp_dir):
 # 6. shutdown 不杀 detach
 # ===========================================================================
 
-@pytest.mark.source_contract
-def test_shutdown_skips_detached_source():
-    """shutdown() 源码层面必须对 detach 执行 continue。"""
-    src = _read_src("scheduler.py")
-    block = _method_block(src, "def shutdown(self)")
-    assert 'getattr(run, "detached", False)' in block, "shutdown 未判断 detached"
-    assert "continue" in block, "shutdown 未跳过 detach"
-    assert "self.abort(run_id)" in block, "shutdown 应仅中止非 detach"
+def test_shutdown_skips_detached(sched):
+    """shutdown() 不得中止 detach 后台进程，只中止普通运行实例。
+
+    行为测试（原为源码断言）：构造 detach 与非 detach 两个运行实例，
+    调 shutdown() 后检查实际被 abort 的是哪一个。
+    """
+    d = Run(id="det1", job_name="j", job_type="COMMAND", status="RUNNING",
+            detached=True, pid=9011, process_create_time="ct-d")
+    n = Run(id="nor1", job_name="j", job_type="COMMAND", status="RUNNING",
+            detached=False, pid=9012, process_create_time="ct-n")
+    sched.running["det1"] = d
+    sched.running["nor1"] = n
+
+    aborted = []
+    sched.abort = lambda rid: aborted.append(rid)      # 记录 shutdown 实际 abort 的对象
+    sched.aps.shutdown = lambda wait=False: None
+
+    sched.shutdown()
+
+    assert "det1" not in aborted, f"独立进程(detach)不应在 shutdown 被中止: {aborted}"
+    assert "nor1" in aborted, f"普通任务应在 shutdown 被中止: {aborted}"
 
 
 # ===========================================================================
@@ -321,32 +334,55 @@ def test_isolation_warning_field_roundtrip():
 
 
 # ===========================================================================
-# 9. 源码契约：孤儿清理 / 命名 Job / 启动方式 / 停止途径 / 一致性核对
+# 9. 行为契约：孤儿清理 / 命名 Job / 启动方式 / 停止途径 / 一致性核对
 # ===========================================================================
 
-@pytest.mark.source_contract
-def test_shell_orphan_sweep_exists():
-    """via_shell 任务停止时必须具备孤儿清理能力，且按父 pid 精确匹配。"""
-    src = _read_src("scheduler.py")
-    assert "_sweep_shell_orphans" in src, "缺少 shell 孤儿清理"
+def test_shell_orphan_sweep_on_stop(sched, monkeypatch):
+    """via_shell 任务停止时必须执行孤儿清理，并在返回值中回传清理结果。
 
-    block = _method_block(src, "    def stop(self")
-    assert "_sweep_shell_orphans" in block, "stop() 未调用孤儿清理"
-    assert 'getattr(run, "via_shell", False)' in block, "未按 via_shell 触发"
+    行为测试（原为源码断言）：把 _sweep_shell_orphans 替换为记录调用的桩，
+    构造 via_shell=True 的 run，走 stop() 后确认清理被触发且结果被回传。
+    """
+    from app import identity as identity_mod
 
-    j = src.index("def _sweep_shell_orphans")
-    sweep = src[j:j + 1500]
-    assert "ParentProcessId=" in sweep, "孤儿清理未按父 pid 精确匹配"
+    run = Run(id="sw1", job_name="j", job_type="COMMAND", status="RUNNING",
+              pid=424242, process_create_time="ct-sw", via_shell=True)
+    sched.store.save_run(run)
+    sched.running["sw1"] = run
+
+    # 身份核验通过、进程已不在（避免真的去 kill）
+    monkeypatch.setattr(identity_mod, "verify_identity", lambda r, pid=None: True)
+    monkeypatch.setattr(identity_mod, "process_is_alive", lambda r, pid=None: False)
+
+    calls = []
+    monkeypatch.setattr(sched, "_sweep_shell_orphans",
+                        lambda r: calls.append(r.id) or "cleaned_children=1")
+
+    res = sched.stop("sw1")
+
+    assert calls == ["sw1"], f"via_shell 停止未触发孤儿清理: {calls}"
+    assert res.get("orphan_sweep") == "cleaned_children=1", res
 
 
 @pytest.mark.source_contract
 def test_instance_job_no_kill_on_close():
-    """每实例命名 Job 必须不启用 KILL_ON_JOB_CLOSE。
+    """每实例命名 Job 必须不启用 KILL_ON_JOB_CLOSE（保留源码断言）。
 
     这是「任务不依赖调度中心存活」的技术前提：调度中心退出时其 Job 句柄关闭，
     若设了 KILL_ON_JOB_CLOSE 会把任务一起带走。
+
+    此项保留源码断言而非改行为测试，原因：验证它需要真实创建 Job 对象
+    并查询 LimitFlags；源码断言更直接。
+    阶段2 拆分后该实现位于 executor/core.py（尚未拆到 win_job.py），
+    因此按「先找包内文件，再回退旧路径」读取，兼容两种布局。
     """
-    src = _read_src("executor.py")
+    for candidate in ("executor/core.py", "executor/win_job.py", "executor.py"):
+        if (APP_DIR / candidate).exists():
+            src = _read_src(candidate)
+            break
+    else:
+        raise AssertionError("找不到 executor 实现文件")
+
     assert "_job_attach" in src, "缺少每实例 Job 建立逻辑"
     assert "info.Basic.LimitFlags = 0" in src, "Job 未显式清零 LimitFlags"
     seg = src.split("def _job_attach")[1].split("def _job_terminate")[0]
@@ -365,26 +401,65 @@ def test_headless_launcher_exists():
     assert "SC_PORT" in run_py, "run.py 未支持 SC_PORT"
 
 
-@pytest.mark.source_contract
-def test_stop_uses_job_then_tree():
-    """停止应优先用 Job 句柄终止整组，无句柄时回退进程树并记录途径。"""
-    src = _read_src("scheduler.py")
-    block = _method_block(src, "    def stop(self")
-    assert "_job_terminate" in block, "stop 未尝试用 Job 终止"
-    assert "safe_kill" in block, "stop 未保留进程树回退"
-    assert "stop_via" in block, "未记录停止途径"
+def test_stop_uses_job_then_tree(sched, monkeypatch):
+    """停止应优先用 Job 句柄终止整组，无句柄时回退进程树，并记录停止途径。
+
+    行为测试（原为源码断言）：分别构造 Job 可用与不可用两种情况，
+    检查返回值的 stop_via 字段。
+    """
+    from app import identity as identity_mod
+
+    def _mk(run_id):
+        r = Run(id=run_id, job_name="j", job_type="COMMAND", status="RUNNING",
+                pid=555000, process_create_time="ct-" + run_id)
+        sched.store.save_run(r)
+        sched.running[run_id] = r
+        return r
+
+    monkeypatch.setattr(identity_mod, "verify_identity", lambda r, pid=None: True)
+    monkeypatch.setattr(identity_mod, "process_is_alive", lambda r, pid=None: False)
+    monkeypatch.setattr(identity_mod, "safe_kill", lambda r, pid=None, group_id=None: None)
+    monkeypatch.setattr(sched, "_finalize_user_stop", lambda r, reason, status: None)
+    monkeypatch.setattr(sched.executor, "_job_close", lambda rid: None)
+    monkeypatch.setattr(sched.executor, "mark_user_stopped", lambda rid: None)
+    monkeypatch.setattr(sched, "_sweep_shell_orphans", lambda r: "")
+
+    # 情况 1：Job 句柄可用 -> stop_via == "job"
+    _mk("via_job")
+    monkeypatch.setattr(sched.executor, "_job_terminate", lambda rid: True)
+    res = sched.stop("via_job")
+    assert res.get("stop_via") == "job", res
+
+    # 情况 2：Job 句柄不可用 -> 回退进程树，stop_via == "tree"
+    _mk("via_tree")
+    monkeypatch.setattr(sched.executor, "_job_terminate", lambda rid: False)
+    res = sched.stop("via_tree")
+    assert res.get("stop_via") == "tree", res
 
 
-@pytest.mark.source_contract
-def test_terminal_run_reconcile_exists():
-    """Scheduler 必须核对终态记录与真实进程状态的一致性。"""
-    src = _read_src("scheduler.py")
-    assert "_reconcile_terminal_runs" in src, "缺少终态记录一致性核对"
+def test_terminal_run_reconcile_fixes_inconsistent(sched, monkeypatch):
+    """终态记录与真实进程不一致时，恢复流程必须把它修正为 RUNNING。
 
-    block = _method_block(src, "def recover_on_start")
-    assert "_reconcile_terminal_runs" in block, "recover_on_start 未调用一致性核对"
-    assert "recent_runs" in src, "未查询终态记录"
+    行为测试（原为源码断言）：造一条「DB 里是终态但进程仍在跑」的记录，
+    调 recover_on_start() 后检查状态被正确修正。
+    """
+    from app import identity as identity_mod
 
-    j = src.index("def _reconcile_terminal_runs")
-    seg = src[j:j + 2000]
-    assert "verify_identity" in seg, "核对未做身份核验"
+    run = Run(id="rec1", job_name="j", job_type="COMMAND", status="KILLED",
+              pid=777888, process_create_time="ct-rec", detached=True,
+              end="2026-11-17T00:00:00+08:00", exit_code=1)
+    sched.store.save_run(run)
+
+    # 进程仍在运行，且身份匹配
+    monkeypatch.setattr(identity_mod, "verify_identity", lambda r, pid=None: True)
+    monkeypatch.setattr(identity_mod, "process_is_alive", lambda r, pid=None: True)
+    # 避免真的起监控线程
+    monkeypatch.setattr(sched, "_detached_watch_loop", lambda r: None)
+
+    sched.recover_on_start()
+
+    after = sched.store.get_run("rec1")
+    assert after.status == "RUNNING", f"终态不一致未被修正: {after.status}"
+    assert after.end is None, after.end
+    assert after.exit_code is None, after.exit_code
+    assert "状态不一致已修正" in (after.interrupted_reason or ""), after.interrupted_reason
