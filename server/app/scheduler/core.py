@@ -20,6 +20,8 @@ from ..store import Store
 from .events import EventBus
 from .log_manager import LogManager
 from .views import Views
+from .heartbeat import HeartbeatMonitor
+from .registration import JobRegistration
 
 logger = logging.getLogger("scheduler")
 
@@ -85,6 +87,8 @@ class Scheduler:
         self._events = EventBus(self)
         self._logs = LogManager(self)
         self._views = Views(self)
+        self._heartbeat = HeartbeatMonitor(self)
+        self._registration = JobRegistration(self)
 
         self.aps = BackgroundScheduler()
         self.aps.add_listener(self._job_listener)
@@ -160,71 +164,12 @@ class Scheduler:
         if event.code == 4096:
             pass
 
+    # ---- 配置加载与 cron 注册（实现在 registration）----
     def load_config(self) -> List[str]:
-        import json
-
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            raw = f.read()
-        raw = _strip_json_comments(raw)
-        data = json.loads(raw)
-
-        jobs: List[Job] = []
-        errors: List[str] = []
-        self.groups = {}
-
-        if isinstance(data, dict):
-            groups = data.get("groups")
-            if groups is not None:
-                for g in groups:
-                    g_key = str(g.get("key") or g.get("name") or "")
-                    g_task_type = _as_type(g.get("task_type"))
-                    self.groups[g_key] = {
-                        "key": g_key,
-                        "name": str(g.get("name") or g_key),
-                        "remark": str(g.get("remark") or ""),
-                        "task_type": g_task_type,
-                    }
-                    for item in g.get("items", []):
-                        entry = dict(item)
-                        entry.setdefault("group", g_key)
-                        if not entry.get("type") and g_task_type:
-                            entry["type"] = g_task_type
-                        job = Job.from_dict(entry)
-                        _collect_job(job, jobs, errors)
-            else:
-                flat = data.get("jobs", [])
-                if isinstance(flat, list):
-                    for entry in flat:
-                        job = Job.from_dict(entry)
-                        _collect_job(job, jobs, errors)
-                else:
-                    errors.append("cfg 顶层需是 groups 或 jobs 数组")
-        elif isinstance(data, list):
-            for entry in data:
-                job = Job.from_dict(entry)
-                _collect_job(job, jobs, errors)
-        else:
-            errors.append("配置根节点必须是对象或数组")
-
-        if not errors:
-            self.jobs = {j.name: j for j in jobs}
-            self.store.upsert_jobs(jobs)
-        return errors
+        return self._registration.load_config()
 
     def _register_all(self):
-        self.aps.remove_all_jobs()
-        for name, job in self.jobs.items():
-            if job.enabled and job.schedule:
-                try:
-                    self.aps.add_job(
-                        self._trigger_job,
-                        CronTrigger.from_crontab(job.schedule),
-                        args=[name, "cron"],
-                        id=f"job_{name}",
-                        replace_existing=True,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.error(f"Job[{name}] cron 注册失败: {e}")
+        return self._registration.register_all()
 
     def start(self):
         db_jobs = self.store.load_jobs()
@@ -464,55 +409,19 @@ class Scheduler:
         self._publish_status_change(run)
         logger.info(f"恢复 run[{run.id}] 已确认结束 -> INTERRUPTED")
 
+    # ---- 心跳（实现在 heartbeat）----
     def _heartbeat_loop(self):
-        while not self._heartbeat_stop:
-            try:
-                self._heartbeat_tick()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"心跳 tick 异常: {e}")
-            for _ in range(self.heartbeat_interval):
-                if self._heartbeat_stop:
-                    return
-                time.sleep(1)
+        return self._heartbeat.loop()
 
     def _heartbeat_tick(self):
-
-        runs = self.store.running_runs()
-        managed = [r for r in runs
-                   if r.status in ("RUNNING", "ORPHANED", "STARTING")]
-        now_s = datetime.now().astimezone().isoformat(timespec="seconds")
-        timeout_sec = self.heartbeat_interval * _heartbeat_timeout_times()
-
-        for r in managed:
-            r.last_heartbeat = now_s
-            self.store.save_run(r, heartbeat_only=True)
-            hb = r.last_heartbeat or r.start
-            if not self._within_timeout(hb, timeout_sec):
-                self._check_heartbeat_timeout(r)
+        return self._heartbeat.tick()
 
     @staticmethod
     def _within_timeout(ts, timeout_sec: float) -> bool:
-        try:
-            from datetime import datetime as _dt
-            t = _dt.fromisoformat(ts.replace("Z", "+00:00"))
-            return (datetime.now().astimezone() - t).total_seconds() <= timeout_sec
-        except Exception:  # noqa: BLE001
-            return False
+        return HeartbeatMonitor.within_timeout(ts, timeout_sec)
 
     def _check_heartbeat_timeout(self, run: Run):
-        if identity_mod.process_is_alive(run, run.pid):
-            run.last_heartbeat = datetime.now().astimezone().isoformat(timespec="seconds")
-            self.store.save_run(run, heartbeat_only=True)
-            return
-        if run.status == "INTERRUPTED":
-            return
-        run.status = "INTERRUPTED"
-        run.interrupted_reason = (run.interrupted_reason or
-                                  "心跳连续超时且 OS 探针确认进程已不在运行，判定中断")
-        run.end = run.end or datetime.now().astimezone().isoformat(timespec="seconds")
-        self.store.save_run(run)
-        self._publish_status_change(run)
-        logger.warning(f"心跳超时 + OS 探针确认死亡: run[{run.id}] -> INTERRUPTED")
+        return self._heartbeat.check_timeout(run)
 
     def trigger(self, job_name: str):
         with self._lock:
@@ -713,27 +622,10 @@ class Scheduler:
         return True
 
     def _register_job(self, job: Job):
-        try:
-            self.aps.remove_job(f"job_{job.name}")
-        except Exception:
-            pass
-        if job.enabled and job.schedule:
-            try:
-                self.aps.add_job(
-                    self._trigger_job,
-                    CronTrigger.from_crontab(job.schedule),
-                    args=[job.name, "cron"],
-                    id=f"job_{job.name}",
-                    replace_existing=True,
-                )
-            except Exception as e:
-                logger.error(f"Job[{job.name}] cron 注册失败: {e}")
+        return self._registration.register_job(job)
 
     def _unregister_job(self, name: str):
-        try:
-            self.aps.remove_job(f"job_{name}")
-        except Exception:
-            pass
+        return self._registration.unregister_job(name)
 
     # ---- 任务 / 分组 / 服务组 视图（实现在 views）----
     def jobs_view(self, *, sort: Optional[str] = None, order: str = "desc") -> List[dict]:
