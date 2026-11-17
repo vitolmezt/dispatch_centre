@@ -17,30 +17,6 @@ IS_WINDOWS = os.name == "nt"
 IS_LINUX = sys.platform.startswith("linux")
 
 
-class CannotProveIdentity(Exception):
-    """无法证明某 pid 与某 run 属于同一 OS 进程时抛出（安全侧拒绝动作）。"""
-
-
-
-def pidfd_available() -> bool:
-    """pidfd 是否可用（Linux 内核 >=5.3，os.pidfd_open 存在且能拿到 fd）。"""
-    if not IS_LINUX:
-        return False
-    if not hasattr(os, "pidfd_open"):
-        return False
-    return True
-
-
-def job_object_support() -> str:
-    """命名 Job Object 支持情况：'none' | 'create' | 'reopen'。
-
-    Windows 上若本进程能创建命名 Job Object，则返回 'create'；重启后若同名
-    Job 仍在且能打开，返回 'reopen'。实际唯一句柄在运行时拿，这里只做能力宣告。
-    """
-    return "none"
-
-
-
 def get_process_create_time(pid: int) -> Optional[str]:
     try:
         pid = int(pid)
@@ -99,7 +75,6 @@ def _linux_starttime(pid: int) -> Optional[str]:
 
 
 def get_executable_path(pid: int) -> Optional[str]:
-    """可执行文件绝对路径（辅助佐证；Windows 用 QueryFullProcessImageNameW）."""
     try:
         pid = int(pid)
         if IS_WINDOWS:
@@ -124,7 +99,6 @@ def get_executable_path(pid: int) -> Optional[str]:
 
 
 def command_line_fingerprint(cmdline: Optional[List[str]]) -> Optional[str]:
-    """把 argv 列表做成指纹（辅助佐证）. 空输入返回 None."""
     if not cmdline:
         return None
     joined = "\x00".join(str(c) for c in cmdline)
@@ -132,7 +106,6 @@ def command_line_fingerprint(cmdline: Optional[List[str]]) -> Optional[str]:
 
 
 def read_process_group_id(pid: int) -> Optional[int]:
-    """读取真实进程组/进程树根 pid 以供佐证（不做“==界= pid”假设）."""
     try:
         pid = int(pid)
         if IS_WINDOWS:
@@ -213,7 +186,6 @@ def _os_alive_probe(pid: int, identity: Dict[str, Optional[object]]) -> bool:
 
 
 def process_is_alive(run, pid: Optional[int] = None) -> bool:
-    """外部便捷入口：用已落库的身份凭据校验进程是否存活."""
     pid = pid if pid is not None else run.pid
     if not pid:
         return False
@@ -226,7 +198,6 @@ def process_is_alive(run, pid: Optional[int] = None) -> bool:
 
 
 def verify_identity(run, pid: Optional[int] = None) -> bool:
-    """身份核验：pid 对应的进程是否就是 run 记录的那个进程（零容忍）。"""
     pid = pid if pid is not None else run.pid
     if not pid:
         return False
@@ -278,10 +249,8 @@ def _win_safe_kill(run, pid: int, group_id: Optional[int]) -> Optional[str]:
 
 
 def _posix_safe_kill(run, pid: int, group_id: Optional[int]) -> Optional[str]:
-    """POSIX：优先 pidfd 单发；否则进程组(os.killpg)杀死组长后成员复核。"""
     if not verify_identity(run, pid):
         return "身份核验失败（POSIX），拒绝终止"
-    # 尝试 pidfd
     fd = None
     try:
         if hasattr(os, "pidfd_open"):
@@ -321,16 +290,3 @@ def _posix_safe_kill(run, pid: int, group_id: Optional[int]) -> Optional[str]:
         return "无权限终止该进程组，拒绝继续"
     except Exception as e:  # noqa: BLE001
         return f"killpg 失败: {str(e)[:200]}"
-
-
-def read_cmdline(pid: int) -> Optional[List[str]]:
-    """读取某 pid 的命令行参数（用于对照指纹，辅助佐证）."""
-    try:
-        if IS_LINUX:
-            raw = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\x00")
-            return [x.decode("utf-8", "replace") for x in raw if x]
-        elif IS_WINDOWS:
-            return None
-    except Exception:  # noqa: BLE001
-        return None
-    return None

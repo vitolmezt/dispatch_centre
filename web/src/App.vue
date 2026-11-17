@@ -94,7 +94,7 @@ const menus = [
     <el-container class="app-shell">
       <el-aside :width="collapsed ? '64px' : '220px'" class="aside" :class="{ 'is-collapsed': collapsed }">
         <div class="logo">
-          <span class="logo-mark">S</span>
+          <img class="logo-mark" src="./assets/logo.png" alt="调度中心" />
           <span v-show="!collapsed" class="logo-text">调度中心</span>
         </div>
         <nav class="nav">
@@ -192,8 +192,7 @@ const menus = [
 .logo-text { white-space: nowrap; }
 .logo-mark {
   width: 30px; height: 30px; flex: 0 0 30px; border-radius: 7px;
-  background: var(--primary); color: #fff; display: grid; place-items: center;
-  font-weight: 800; letter-spacing: .5px;
+  display: block; object-fit: contain;
 }
 .nav { padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
 .nav-item {

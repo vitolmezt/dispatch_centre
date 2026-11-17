@@ -7,7 +7,6 @@ from . import constants
 
 
 def _as_job_type(v: Any) -> str:
-    """归一化为大写英文缩写，例如 'script'、'SCRIPT' -> 'SCRIPT'."""
     return str(v).strip().upper()
 
 
@@ -57,17 +56,6 @@ JOB_PARAM_SCHEMA: Dict[str, Dict[str, Any]] = {
 
 @dataclass
 class Job:
-    """一个可调度的任务定义（对应 config/jobs.json 中的一条 mapping）.
-
-    name       任务名（唯一标识，对应 crawler 分组内 item 的 key）
-    type       大写英文缩写：COMMAND | SCRIPT | PROGRAM | FILEOP
-    group      所属分组标识（crawler 风格外层分组 key，如 system-commands）
-    params     类型专属参数字典（见 JOB_PARAM_SCHEMA）
-    schedule   cron 表达式，None 表示仅手动触发
-    timeout_s  超时秒数，0 表示不限制
-    enabled    是否启用
-    description 说明
-    """
 
     name: str
     type: str = "COMMAND"
@@ -210,11 +198,8 @@ class Run:
     interrupted_reason: str = ""
     adopted: bool = False
     retryable: bool = False
-    # 日志读取偏移量：重启接管时从该位置续读，避免重复推送历史日志
     log_offset: int = 0
-    # 命令是否经过 shell 包装（true 表示被记录的 pid 是 shell，真实进程是孙进程）
     via_shell: bool = False
-    # Job 隔离缺失告警（非空表示该次运行未能获得 Job 级隔离）
     isolation_warning: str = ""
 
     def __post_init__(self):
