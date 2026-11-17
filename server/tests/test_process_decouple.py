@@ -355,6 +355,11 @@ def test_shell_orphan_sweep_on_stop(sched, monkeypatch):
     monkeypatch.setattr(identity_mod, "process_is_alive", lambda r, pid=None: False)
 
     calls = []
+    # 阶段3-7 拆分后 stop() 实现在 ProcessController，内部调用
+    # self.sweep_shell_orphans，不再经由门面方法，因此需 patch 实现处；
+    # 同时 patch 门面方法以兼容未拆分的布局。
+    monkeypatch.setattr(sched._control, "sweep_shell_orphans",
+                        lambda r: calls.append(r.id) or "cleaned_children=1")
     monkeypatch.setattr(sched, "_sweep_shell_orphans",
                         lambda r: calls.append(r.id) or "cleaned_children=1")
 

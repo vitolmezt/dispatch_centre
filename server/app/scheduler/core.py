@@ -23,6 +23,7 @@ from .views import Views
 from .heartbeat import HeartbeatMonitor
 from .registration import JobRegistration
 from .recovery import RecoveryManager
+from .process_control import ProcessController
 
 logger = logging.getLogger("scheduler")
 
@@ -91,6 +92,7 @@ class Scheduler:
         self._heartbeat = HeartbeatMonitor(self)
         self._registration = JobRegistration(self)
         self._recovery = RecoveryManager(self)
+        self._control = ProcessController(self)
 
         self.aps = BackgroundScheduler()
         self.aps.add_listener(self._job_listener)
@@ -203,38 +205,12 @@ class Scheduler:
             self.abort(run_id)
         self.aps.shutdown(wait=False)
 
+    # ---- 触发（实现在 process_control）----
     def _trigger_job(self, job_name: str, trigger: str = "manual"):
-        with self._lock:
-            job = self.jobs.get(job_name)
-            if job is None:
-                return None
-            if not job.enabled:
-                return None
-            if any(r.job_name == job_name for r in self.running.values()):
-                return None
-            run = Run(
-                id=self.store.new_run_id(),
-                job_name=job.name,
-                job_type=job.type,
-                trigger=trigger,
-                timeout_s=job.timeout_s,
-            )
-            run.status = "STARTING"
-            run.node_id = self.node_id
-            run.detached = bool(job.params.get("detach", False))
-            self.running[run.id] = run
-        self.store.save_run(run)
-        t = threading.Thread(target=self._run_worker, args=(run, job), daemon=True)
-        t.start()
-        return run
+        return self._control.trigger_job(job_name, trigger)
 
     def _run_worker(self, run: Run, job: Job):
-        try:
-            self.executor.run(run, job)
-        except Exception as e:
-            run.status = "FAILED"
-            run.error = str(e)
-            self.on_finished(run)
+        return self._control.run_worker(run, job)
 
     # ---- 启动恢复 / 孤儿接管 / 状态核对（实现在 recovery）----
     def recover_on_start(self):
@@ -272,136 +248,25 @@ class Scheduler:
     def _check_heartbeat_timeout(self, run: Run):
         return self._heartbeat.check_timeout(run)
 
+    # ---- 触发 / 中止 / 停止（实现在 process_control）----
     def trigger(self, job_name: str):
-        with self._lock:
-            if job_name not in self.jobs:
-                return None
-            if not self.jobs[job_name].enabled:
-                return "disabled"
-            if any(r.job_name == job_name for r in self.running.values()):
-                return "blocked"
-        return self._trigger_job(job_name, "api")
+        return self._control.trigger(job_name)
 
     def abort(self, run_id: str) -> bool:
-        with self._lock:
-            run = self.running.get(run_id)
-        if run is None:
-            # 重启恢复/孤儿实例没有 Popen 句柄，回落到按 pid 身份核验的停止逻辑，
-            # 否则会出现「已标记用户中止但进程其实还活着」的假成功。
-            res = self.stop(run_id)
-            return bool(res.get("ok") and res.get("stop"))
-        self.executor.abort(run)
-        self._finalize_user_stop(run, "用户中止", "KILLED")
-        return True
+        return self._control.abort(run_id)
 
     def stop(self, run_id: str) -> dict:
-        run = self.store.get_run(run_id)
-        if run is None:
-            return {"ok": False, "stop": False, "reason": "run_not_found"}
-        pid = getattr(run, "pid", None)
-        if not pid:
-            return {"ok": True, "stop": False, "reason": "no_pid"}
-
-        identity_ok = identity_mod.verify_identity(run, pid)
-        if not identity_ok:
-            still = self._pid_exists_raw(pid)
-            return {
-                "ok": False, "stop": False, "pid": pid,
-                "reason": "身份核验失败：PID 或进程创建时刻不匹配（可能 PID 已被复用），拒绝终止",
-                "process_still_exists": still,
-            }
-
-        stop_via = "tree"
-        if self.executor._job_terminate(run.id):
-            stop_via = "job"
-            for _ in range(30):
-                if not identity_mod.process_is_alive(run, pid):
-                    break
-                time.sleep(0.2)
-        else:
-            reason = identity_mod.safe_kill(run, pid, group_id=run.process_group_id)
-            if reason is not None:
-                if identity_mod.process_is_alive(run, pid):
-                    return {"ok": False, "stop": False, "pid": pid, "reason": reason}
-                reason = None
-        orphan_note = ""
-        if getattr(run, "via_shell", False):
-            orphan_note = self._sweep_shell_orphans(run)
-
-        self.executor.mark_user_stopped(run.id)
-        with self._lock:
-            in_running = run.id in self.running
-        if in_running:
-            self._finalize_user_stop(run, "用户停止", "KILLED")
-        self.executor._job_close(run.id)
-        res = {"ok": True, "stop": True, "pid": pid,
-               "reason": "killed" if in_running else "already_stopped",
-               "stop_via": stop_via}
-        if orphan_note:
-            res["orphan_sweep"] = orphan_note
-        return res
+        return self._control.stop(run_id)
 
     def _sweep_shell_orphans(self, run: Run) -> str:
-        if os.name != "nt":
-            return ""
-        pid = getattr(run, "pid", None)
-        if not pid:
-            return ""
-        try:
-            import subprocess as _sp
-            ps = (
-                "Get-CimInstance Win32_Process -Filter \"ParentProcessId="
-                + str(int(pid)) + "\" | Select-Object -ExpandProperty ProcessId"
-            )
-            out = _sp.run(["powershell", "-NoProfile", "-Command", ps],
-                          capture_output=True, text=True, errors="replace", timeout=20)
-            kids = [t for t in (out.stdout or "").split() if t.isdigit()
-                    and int(t) != os.getpid()]
-            if not kids:
-                return ""
-            for k in kids:
-                _sp.run(["taskkill", "/F", "/T", "/PID", k],
-                        capture_output=True, timeout=10)
-            return f"cleaned_children={','.join(kids)}"
-        except Exception:  # noqa: BLE001
-            return ""
+        return self._control.sweep_shell_orphans(run)
 
     @staticmethod
     def _pid_exists_raw(pid) -> bool:
-        """纯 OS 层判断 pid 是否存在，不依赖身份凭据"""
-        try:
-            pid = int(pid)
-        except (TypeError, ValueError):
-            return False
-        if pid <= 0:
-            return False
-        if os.name == "nt":
-            try:
-                import subprocess as _sp
-                out = _sp.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-                              capture_output=True, text=True, errors="replace", timeout=10)
-                return f'"{pid}"' in (out.stdout or "")
-            except Exception:  # noqa: BLE001
-                return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        return ProcessController.pid_exists_raw(pid)
 
     def _finalize_user_stop(self, run: Run, reason: str, status: str):
-        with self._lock:
-            if run.id in self.running:
-                cur = self.running[run.id]
-            else:
-                cur = run
-            cur.status = status
-            cur.error = reason
-            cur.end = cur.end or datetime.now().astimezone().isoformat(timespec="seconds")
-            self.running.pop(run.id, None)
-        self.store.save_run(cur)
-        self.publish_finished(cur)
-        self._publish_log_end(run.id)
+        return self._control.finalize_user_stop(run, reason, status)
 
     def add_job(self, job: Job):
         with self._lock:
