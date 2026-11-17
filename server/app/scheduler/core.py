@@ -24,6 +24,7 @@ from .heartbeat import HeartbeatMonitor
 from .registration import JobRegistration
 from .recovery import RecoveryManager
 from .process_control import ProcessController
+from .service_groups import ServiceGroupCoordinator
 
 logger = logging.getLogger("scheduler")
 
@@ -93,6 +94,7 @@ class Scheduler:
         self._registration = JobRegistration(self)
         self._recovery = RecoveryManager(self)
         self._control = ProcessController(self)
+        self._group_exec = ServiceGroupCoordinator(self)
 
         self.aps = BackgroundScheduler()
         self.aps.add_listener(self._job_listener)
@@ -364,73 +366,21 @@ class Scheduler:
     def _group_member_last(self, job_name: str) -> Optional[dict]:
         return self._views._group_member_last(job_name)
 
+    # ---- 服务组（实现在 service_groups）----
     def add_service_group(self, group: ServiceGroup):
-        with self._lock:
-            self.service_groups[group.name] = group
-            self.store.upsert_service_group(group)
-        logger.info(f"service_group created: {group.name} ({len(group.members)} members)")
+        return self._group_exec.add(group)
 
     def update_service_group(self, group: ServiceGroup):
-        with self._lock:
-            self.service_groups[group.name] = group
-            self.store.upsert_service_group(group)
-        logger.info(f"service_group updated: {group.name}")
+        return self._group_exec.update(group)
 
     def delete_service_group(self, name: str):
-        with self._lock:
-            self.service_groups.pop(name, None)
-            self.store.delete_service_group(name)
-        logger.info(f"service_group deleted: {name}")
+        return self._group_exec.delete(name)
 
     def start_service_group(self, name: str) -> dict:
-        with self._lock:
-            group = self.service_groups.get(name)
-        if group is None:
-            return {"ok": False, "reason": "not_found"}
-        started = []
-        errors = []
-        for m in sorted(group.members, key=lambda x: int(x.get("order", 0))):
-            jn = str(m.get("job_name") or "")
-            with self._lock:
-                job = self.jobs.get(jn)
-                if job is None:
-                    errors.append(f"{jn}: 任务不存在")
-                    continue
-                if any(r.job_name == jn and r.status == "RUNNING"
-                       for r in self.running.values()):
-                    run = next(r for r in self.running.values()
-                               if r.job_name == jn and r.status == "RUNNING")
-                    started.append({"job_name": jn, "run_id": run.id, "status": "already_running"})
-                    continue
-            run = self._trigger_job(jn, "api")
-            started.append({"job_name": jn, "run_id": run.id if run else None,
-                            "status": "started" if run else "failed"})
-            if run is None:
-                errors.append(f"{jn}: 启动失败")
-        return {"ok": not errors, "name": name, "started": started, "errors": errors}
+        return self._group_exec.start(name)
 
     def stop_service_group(self, name: str) -> dict:
-        with self._lock:
-            group = self.service_groups.get(name)
-        if group is None:
-            return {"ok": False, "reason": "not_found"}
-        stopped = []
-        errors = []
-        for m in group.members:
-            jn = str(m.get("job_name") or "")
-            with self._lock:
-                run = next((r for r in self.running.values()
-                            if r.job_name == jn and r.status == "RUNNING"), None)
-            if run is None:
-                continue
-            res = self.stop(run.id)
-            if res.get("ok"):
-                stopped.append({"job_name": jn, "run_id": run.id,
-                                "stopped": res.get("stop"),
-                                "reason": res.get("reason")})
-            else:
-                errors.append(f"{jn}: 停止失败 ({res.get('reason')})")
-        return {"ok": not errors, "name": name, "stopped": stopped, "errors": errors}
+        return self._group_exec.stop(name)
 
     def get_running(self, run_id: str):
         return self._views.get_running(run_id)
